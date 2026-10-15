@@ -1196,7 +1196,8 @@ function Shell({me,page,go,logout,children}){
 }
 
 // Email links point to /#/t/MLOPS-0001; open that ticket once the user is signed in
-let deepRid=(location.hash.match(/^#\/t\/([\w-]+)$/)||[])[1]||null;
+const hashRid=()=>(location.hash.match(/^#\/t\/([\w-]+)$/)||[])[1]||null;
+let deepRid=hashRid();
 function landing(u){
   if(deepRid){const a=deepRid;deepRid=null;history.replaceState(null,'',location.pathname);return {n:'detail',a}}
   return {n:'dashboard'};
@@ -1204,7 +1205,11 @@ function landing(u){
 function App(){
   const [me,setMe]=useState(null),[page,setPage]=useState({n:'login'}),[msg,setMsg]=useState(''),[ready,setReady]=useState(false),[reg,setReg]=useState({});
   const go=(n,a)=>{setMsg('');setPage({n,a})},flash=m=>setMsg(m);
-  const seen=useRef(null),[stale,setStale]=useState(false);
+  const seen=useRef(null),[stale,setStale]=useState(false),meRef=useRef(null);meRef.current=me;
+  // A ticket link opened in a tab that already has the app loaded only changes the #hash, so watch for it
+  useEffect(()=>{const h=()=>{const r=hashRid();if(!r)return;history.replaceState(null,'',location.pathname);
+    if(meRef.current){setMsg('');setPage({n:'detail',a:r})}else deepRid=r};
+    addEventListener('hashchange',h);return()=>removeEventListener('hashchange',h)},[]);
   const loadMe=async()=>{try{if(!localStorage.getItem('tok')&&!sessionStorage.getItem('tok'))throw 0;  // not signed in: skip the call
     const u=await api('/me');
     // First load only sets the baseline; afterwards a rising unread count means a new notification arrived
