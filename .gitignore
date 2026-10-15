@@ -15,3 +15,6 @@ Thumbs.db
 .DS_Store
 .vscode/
 .idea/
+
+# Database dumps (contain user data; share privately, never commit)
+*.sql
