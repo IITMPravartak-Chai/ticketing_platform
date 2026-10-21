@@ -388,7 +388,7 @@ LAST_COMMENTER = "(select m.author_id from comments m where m.ticket_id=t.id ord
 
 # ---------------- Tickets: reading ----------------
 def resolver(u=Depends(user)):
-    if u["role"] not in ("engineer", "admin"): raise HTTPException(403, "ML Engineers and admins only")
+    if u["role"] not in ("engineer", "admin"): raise HTTPException(403, "MLOps Engineers and admins only")
     return u
 @app.get("/api/dashboard")
 def dashboard(u=Depends(user)):
@@ -851,7 +851,7 @@ html[data-theme="dark"] .toast{background:#020617;border:1px solid #334155}
 const {useState,useEffect,useCallback,useRef}=React;
 const STAT=["NEW","ASSIGNED","IN PROGRESS","ON HOLD","CLOSED"],TRACK=["NEW","ASSIGNED","IN PROGRESS","CLOSED"],ACTIVE=["ASSIGNED","IN PROGRESS","ON HOLD"];
 const DESC={"NEW":"Waiting for assignment","ASSIGNED":"Owner assigned","IN PROGRESS":"Work in progress","ON HOLD":"Paused by the owner","CLOSED":"Resolved and closed"};
-const ROLES=["user","engineer","admin"],ROLE_NAME={user:'User',engineer:'ML Engineer',admin:'Admin'};
+const ROLES=["user","engineer","admin"],ROLE_NAME={user:'User',engineer:'MLOps Engineer',admin:'Admin'};
 const ACTION={CREATED:'Created',ASSIGNED:'Assigned',REASSIGNED:'Reassigned',OWNERSHIP_TAKEN:'Ownership taken',STATUS_CHANGED:'Status changed',COMMENTED:'Comment',CLOSED:'Closed'};
 const TYPES=["Deployment Request","Access Request","Bug Fix","Other"],PRIOS=["LOW","MEDIUM","HIGH","CRITICAL"],ENVS=["Development","Staging","Production"];
 const DEPLOY=["Successful","Partially Successful","Failed","Rolled Back"],ACCESS_STAT=["Access Granted","Partially Granted","Rejected"];
@@ -1016,7 +1016,7 @@ function EngineerDash({me,go}){
   useLive(()=>Promise.all([api('/dashboard').then(setD),api('/assigned?s=ALL').then(x=>setRows(x.rows.filter(r=>r.status!=='CLOSED')))]));
   if(!d)return <div className="card">Loading…</div>;
   const o=d.owned,cb=d.closed_by_me;
-  return <div><h2 className="hello">Welcome, {me.name}!</h2><p className="sub">Tickets you own as an ML Engineer. Click a card to open that list. Updates automatically.</p>
+  return <div><h2 className="hello">Welcome, {me.name}!</h2><p className="sub">Tickets you own as an MLOps Engineer. Click a card to open that list. Updates automatically.</p>
     <div className="grid">
       <Stat label="Total Assigned to Me" value={o.TOTAL} icon="list" color="#4f46e5" bg="#eef2ff" onClick={()=>go('assigned','ALL')}/>
       <Stat label="To Start" value={o.ASSIGNED} icon="user" color={SC.ASSIGNED[0]} bg={SC.ASSIGNED[1]} onClick={()=>go('assigned','ASSIGNED')} sub="Assigned, not started"/>
@@ -1056,7 +1056,7 @@ function AdminDash({me,go}){
       <div className="tw"><table><thead><tr><th>Name</th><th>Role</th><th>Assigned</th><th>In Progress</th><th>On Hold</th><th>Open Total</th><th>Closed</th></tr></thead><tbody>
       {d.workload.map(w=><tr key={w.id}><td>{w.name}<div className="ssub">{w.email}{w.active?'':' · invited'}</div></td><td><Badge v={w.role}/></td>
         <td>{w.assigned}</td><td>{w.in_progress}</td><td>{w.on_hold}</td><td><b>{w.assigned+w.in_progress+w.on_hold}</b></td><td>{w.closed}</td></tr>)}
-      {!d.workload.length&&<tr><td colSpan="7" className="empty">No ML Engineers yet. Assign a ticket to someone's email to add one.</td></tr>}</tbody></table></div></div>
+      {!d.workload.length&&<tr><td colSpan="7" className="empty">No MLOps Engineers yet. Assign a ticket to someone's email to add one.</td></tr>}</tbody></table></div></div>
     <div className="card"><CardHead title="Recent Activity"/>
       {d.recent.map(h=><div key={h.id} className="act"><div><b>{h.actor||'System'}</b> {(ACTION[h.action]||h.action).toLowerCase()} <a className="l" onClick={()=>go('detail',h.rid)}>{h.rid}</a>
         {h.to_status&&h.from_status!==h.to_status?<> → <Badge v={h.to_status}/></>:null}<div className="ssub">{h.title}</div></div><small>{h.created_at}</small></div>)}
@@ -1113,8 +1113,8 @@ function Users({me,flash}){
   const load=()=>api('/users').then(setRows).catch(e=>flash(e.message));
   useEffect(()=>{load()},[]);
   const setRole=async(u,role)=>{try{await api(`/users/${u.id}/role`,'POST',{role});flash(`${u.email} is now ${ROLE_NAME[role]}`)}catch(e){flash(e.message)}load()};
-  return <div className="card"><p className="sub">Users raise tickets. ML Engineers work on tickets assigned to them. Admins assign tickets, take ownership and manage roles.
-    Assigning a ticket to someone makes them an ML Engineer automatically.</p>
+  return <div className="card"><p className="sub">Users raise tickets. MLOps Engineers work on tickets assigned to them. Admins assign tickets, take ownership and manage roles.
+    Assigning a ticket to someone makes them an MLOps Engineer automatically.</p>
     <div className="tw"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Account</th><th>Open Tickets Owned</th><th>Joined</th></tr></thead><tbody>
     {rows.map(u=><tr key={u.id}><td>{u.name}</td><td>{u.email}</td>
       <td>{u.id===me.id?<Badge v={u.role}/>:<select value={u.role} onChange={e=>setRole(u,e.target.value)} style={{margin:0,width:'auto',padding:'6px 10px'}}>{ROLES.map(r=><option key={r} value={r}>{ROLE_NAME[r]}</option>)}</select>}</td>
