@@ -303,7 +303,7 @@ ADMIN_PASSWORD=Admin@123
 
 Then, straight after deploying:
 
-1. Log in as `admin@example.com` / `Admin@123`, open **Change Password**, and set a strong password. `admin@example.com` has no real mailbox, so *Forgot password?* can't work for it; Change Password is the only way.
+1. Log in as `admin@example.com` / `Admin@123`, open **Settings → Change Password** (bottom of the menu), and set a strong password. `admin@example.com` has no real mailbox, so *Forgot password?* can't work for it; Change Password is the only way.
 2. Log in as `chaigrafana_alerts@iitmpravartak.net` with its existing password and change it the same way. **In the 15 Oct backups this account's password is still `Admin@123`.**
 3. Remove the `ADMIN_PASSWORD` line from `.env` (or leave it empty) and restart: `docker compose up -d`.
 
@@ -611,6 +611,13 @@ NEW ──assign / take ownership──▶ ASSIGNED ──Start Work──▶ IN
 - **Emails:** sent at every step to the requester, the owner, admins, anyone in *Also notify*, and the people an access request is for.
 - **In-app:** notifications refresh every 5 seconds with an optional chime.
 - **Dashboards:** each role has its own, refreshed every 10 seconds.
+
+### Settings
+
+**Settings** sits at the bottom of the menu, above Logout. It has two parts:
+
+- **Appearance:** Light, Dark or System (follows the computer's setting). The choice is remembered per browser.
+- **Change Password:** current password, then the new one twice.
 
 ### Command-line tools
 

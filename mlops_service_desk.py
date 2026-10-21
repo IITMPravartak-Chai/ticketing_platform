@@ -176,7 +176,7 @@ def ensure_admins(c):
         log.error("There is no admin account. Set ADMIN_EMAILS in .env and restart, or run: python mlops_service_desk.py --ensure-admins")
     for a in admins:
         if a["pw_hash"] and check_pw(DEFAULT_ADMIN_PW, a["pw_hash"]):
-            log.warning("Admin %s still uses the default password %s. Change it now (Change Password in the app).", a["email"], DEFAULT_ADMIN_PW)
+            log.warning("Admin %s still uses the default password %s. Change it now (Settings > Change Password in the app).", a["email"], DEFAULT_ADMIN_PW)
     return [a["email"] for a in admins]
 
 @asynccontextmanager
@@ -670,6 +670,8 @@ def read(u=Depends(user)): run("update notifications set seen=true where user_id
 # ---------------- Frontend (React) ----------------
 PAGE = r"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MLOps Service Desk</title>
+<script>/* apply the saved theme before the page paints, so dark mode never flashes white */
+try{var t=localStorage.getItem('theme')||'light';document.documentElement.dataset.theme=(t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme: dark)').matches))?'dark':'light'}catch(e){}</script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234f46e5'/%3E%3Ctext x='16' y='23' font-size='20' text-anchor='middle' fill='white'%3E%E2%9A%99%3C/text%3E%3C/svg%3E">
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -789,6 +791,52 @@ td{padding:13px 12px;border-bottom:1px solid #f1f5f9;text-align:left;vertical-al
 .dev{background:#eef2ff;color:#3730a3;padding:10px 14px;border-radius:10px;margin-bottom:16px}
 .meter{height:6px;background:#e2e8f0;border-radius:6px;overflow:hidden;margin:-4px 0 6px}.meter i{display:block;height:100%;transition:.3s}
 .ok{width:84px;height:84px;border-radius:50%;background:#dcfce7;color:#16a34a;display:grid;place-items:center;margin:0 auto 14px}
+/* ---------- settings ---------- */
+.side .nl.set{margin-top:4px}
+.seg3{display:inline-flex;gap:4px;background:var(--bg);border:1px solid var(--bd);padding:4px;border-radius:12px;flex-wrap:wrap}
+.seg3 button{border:0;background:transparent;color:var(--mu);font:inherit;font-weight:600;padding:9px 16px;border-radius:9px;cursor:pointer;display:inline-flex;gap:8px;align-items:center}
+.seg3 button:hover{color:var(--tx)}.seg3 button.on{background:var(--card);color:var(--p);box-shadow:0 1px 4px #0f172a1a}
+.seg3 button:focus-visible,.nl:focus-visible{outline:2px solid var(--p);outline-offset:2px}
+/* ---------- dark theme (Settings > Appearance; the choice is stored per browser) ---------- */
+html[data-theme="dark"]{color-scheme:dark;--p:#6366f1;--p2:#818cf8;--bg:#0b1020;--card:#141a2c;--tx:#e2e8f0;--mu:#94a3b8;--bd:#263049}
+html[data-theme="dark"] a.l{color:#a5b4fc}
+html[data-theme="dark"] .top{background:#0e1424e6}
+html[data-theme="dark"] .burger,html[data-theme="dark"] .btn.ghost{background:var(--card);color:var(--tx)}
+html[data-theme="dark"] .btn.ghost:hover{background:#1c2438}
+html[data-theme="dark"] .card,html[data-theme="dark"] .stat{background:var(--card);border-color:#1f2740;box-shadow:0 1px 3px #0006}
+html[data-theme="dark"] .stat.click:hover{border-color:#4f46e5}
+html[data-theme="dark"] .stat .ic{box-shadow:inset 0 0 0 100px #0009}html[data-theme="dark"] .stat .ic svg{filter:brightness(1.9)}
+html[data-theme="dark"] label{color:#cbd5e1}
+html[data-theme="dark"] input,html[data-theme="dark"] select,html[data-theme="dark"] textarea{background:#0e1424;border-color:#334155;color:var(--tx)}
+html[data-theme="dark"] .note{background:#13203f;border-color:#1e3a8a;color:#bfdbfe}
+html[data-theme="dark"] .note.warn{background:#2e2108;border-color:#78350f;color:#fcd34d}
+html[data-theme="dark"] .ownbox{background:#211a3a;border-color:#4c1d95}
+html[data-theme="dark"] th{background:#10172a}html[data-theme="dark"] td{border-color:#1c2439}html[data-theme="dark"] tbody tr:hover{background:#18203a}
+html[data-theme="dark"] .b{background:#1e3a8a66;color:#93c5fd}
+html[data-theme="dark"] .b.CLOSED,html[data-theme="dark"] .b.LOW{background:#14532d80;color:#86efac}
+html[data-theme="dark"] .b.ASSIGNED,html[data-theme="dark"] .b.MEDIUM{background:#78350f80;color:#fcd34d}
+html[data-theme="dark"] .b.HIGH,html[data-theme="dark"] .b.CRITICAL{background:#7f1d1d80;color:#fca5a5}
+html[data-theme="dark"] .b.INPROGRESS,html[data-theme="dark"] .b.engineer{background:#0c4a6e80;color:#7dd3fc}
+html[data-theme="dark"] .b.ONHOLD,html[data-theme="dark"] .b.user{background:#33415580;color:#cbd5e1}
+html[data-theme="dark"] .b.admin{background:#4c1d9580;color:#c4b5fd}
+html[data-theme="dark"] .tabs{background:#0e1424}html[data-theme="dark"] .tabs a{color:var(--mu)}html[data-theme="dark"] .tabs a.on{background:var(--card);color:#a5b4fc}
+html[data-theme="dark"] .seg3 button.on{color:#a5b4fc}
+html[data-theme="dark"] .sbar,html[data-theme="dark"] .meter{background:#263049}
+html[data-theme="dark"] .legend,html[data-theme="dark"] .hbar span,html[data-theme="dark"] .kv td:first-child{color:var(--mu)}
+html[data-theme="dark"] .hbar div{background:#1c2439}html[data-theme="dark"] .act{border-color:#1c2439}
+html[data-theme="dark"] .step{color:#64748b}html[data-theme="dark"] .step.done{color:#86efac}
+html[data-theme="dark"] .seg::before,html[data-theme="dark"] .dot{background:#263049}html[data-theme="dark"] .dot{color:var(--mu);border-color:var(--card)}
+html[data-theme="dark"] .seg.done::before,html[data-theme="dark"] .step.done .dot{background:#16a34a}
+html[data-theme="dark"] .tip{background:#020617;border:1px solid #334155}
+html[data-theme="dark"] .msg{background:#1c2439}
+html[data-theme="dark"] .shot{background:#0e1424;border-color:#334155}
+html[data-theme="dark"] .nt{background:#10172a;border-color:#1f2740}html[data-theme="dark"] .nt .ic{background:#1e1b4b;color:#a5b4fc}
+html[data-theme="dark"] .done-box{background:#062a19;border-color:#14532d}html[data-theme="dark"] .done-box td{border-color:#14532d}
+html[data-theme="dark"] .formside{background:var(--card)}
+html[data-theme="dark"] .eye:hover{background:#1c2438}
+html[data-theme="dark"] .dev{background:#1e1b4b;color:#c7d2fe}
+html[data-theme="dark"] .ok{background:#14532d80;color:#86efac}
+html[data-theme="dark"] .toast{background:#020617;border:1px solid #334155}
 @media(max-width:960px){
   .side{transform:translateX(-100%)}.side.open{transform:none}.main{margin-left:0}.burger{display:grid}
   .shade.on{display:block;position:fixed;inset:0;background:#0f172a88;z-index:35}
@@ -823,6 +871,10 @@ vol:'M11 5L6 9H2v6h4l5 4V5zM15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14',mute:'
 eye:'M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
 eyeOff:'M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24M1 1l22 22',
 key:'M21 2l-2 2m-7.6 7.6a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4',
+gear:'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z',
+sun:'M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10zM12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42',
+moon:'M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z',
+monitor:'M2 3h20v14H2zM8 21h8M12 17v4',
 menu:'M3 6h18M3 12h18M3 18h18',check:'M20 6L9 17l-5-5',clock:'M12 6v6l4 2M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z',send:'M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z'};
 const Ic=({n,s=19})=><svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d={P[n]}/></svg>;
 async function api(path,method='GET',body){
@@ -916,7 +968,7 @@ function Verify({go,reg,setReg,flash}){
     {reg.dev&&<div className="dev">Dev mode (no SMTP): your code is <b>{reg.dev}</b></div>}
     <form onSubmit={submit}><div className="otp">{d.map((v,i)=><input key={i} id={'o'+i} value={v} inputMode="numeric" autoComplete="one-time-code" onChange={e=>set(i,e.target.value)} onPaste={e=>paste(i,e)}
       onKeyDown={e=>{if(e.key==='Backspace'&&!d[i]&&i>0)document.getElementById('o'+(i-1)).focus()}}/>)}</div>
-    <p style={{textAlign:'center',color:'#64748b'}}>Code expires in 10 minutes.</p><button className="btn w" disabled={d.join('').length<6}>Verify</button></form>
+    <p style={{textAlign:'center',color:'var(--mu)'}}>Code expires in 10 minutes.</p><button className="btn w" disabled={d.join('').length<6}>Verify</button></form>
     <p style={{textAlign:'center'}}><a className="l" onClick={resend}>Resend Code</a></p></AuthShell>;
 }
 function SetPassword({go,reg,flash}){
@@ -1047,7 +1099,7 @@ function Raise({go,flash}){
 }
 function Submitted({rid,go}){
   return <div className="card" style={{maxWidth:520,margin:'30px auto',textAlign:'center'}}><div className="ok"><Ic n="check" s={44}/></div>
-    <h2>Request Submitted Successfully!</h2><p>Request ID <b>{rid}</b><br/><br/>Status <Badge v="NEW"/></p><p style={{color:'#64748b'}}>The admin has been notified and will assign an owner.</p>
+    <h2>Request Submitted Successfully!</h2><p>Request ID <b>{rid}</b><br/><br/>Status <Badge v="NEW"/></p><p style={{color:'var(--mu)'}}>The admin has been notified and will assign an owner.</p>
     <button className="btn" onClick={()=>go('detail',rid)}>View Request</button></div>;
 }
 function TicketList({src,go,initial,requester}){
@@ -1069,21 +1121,33 @@ function Users({me,flash}){
       <td>{u.active?'Active':'Invited (not signed up yet)'}</td><td>{u.owned_open}</td><td>{u.created_at}</td></tr>)}
     {!rows.length&&<tr><td colSpan="6" className="empty">No users.</td></tr>}</tbody></table></div></div>;
 }
-function ChangePassword({flash,go}){
+// Theme: 'light' | 'dark' | 'system' (follows the computer). Stored per browser; applied as data-theme on <html>.
+const getTheme=()=>{try{return localStorage.getItem('theme')||'light'}catch{return 'light'}};
+const applyTheme=t=>{document.documentElement.dataset.theme=(t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme: dark)').matches))?'dark':'light'};
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{if(getTheme()==='system')applyTheme('system')});
+function Settings({flash}){
+  const [theme,setTheme]=useState(getTheme());
+  const pick=t=>{setTheme(t);try{localStorage.setItem('theme',t)}catch{}applyTheme(t)};
   const [cur,setCur]=useState(''),[p,setP]=useState(''),[c,setC]=useState(''),[busy,setBusy]=useState(false);
   const submit=async e=>{e.preventDefault();if(p!==c)return flash('New passwords do not match');setBusy(true);
-    try{await api('/auth/change-password','POST',{current:cur,password:p});go('dashboard');flash('Password changed.')}catch(x){flash(x.message);setBusy(false)}};
-  return <div className="card" style={{maxWidth:480}}><p className="sub">Use at least 8 characters. You stay logged in on this device.</p><form onSubmit={submit}>
-    <PwField l="Current Password" value={cur} onChange={e=>setCur(e.target.value)} required autoComplete="current-password"/>
-    <PwField l="New Password" value={p} onChange={e=>setP(e.target.value)} required minLength="8" autoComplete="new-password"/>
-    <PwField l="Confirm New Password" value={c} onChange={e=>setC(e.target.value)} required autoComplete="new-password"/>
-    <button className="btn" disabled={busy}>Change Password</button></form></div>;
+    try{await api('/auth/change-password','POST',{current:cur,password:p});setCur('');setP('');setC('');flash('Password changed.')}catch(x){flash(x.message)}setBusy(false)};
+  return <div style={{maxWidth:560}}>
+    <div className="card"><h3>Appearance</h3><p className="sub" style={{marginBottom:14}}>Choose how the Service Desk looks on this browser.</p>
+      <div className="seg3" role="group" aria-label="Theme">{[['light','sun','Light'],['dark','moon','Dark'],['system','monitor','System']].map(([k,ic,l])=>
+        <button key={k} type="button" className={theme===k?'on':''} aria-pressed={theme===k} onClick={()=>pick(k)}><Ic n={ic} s={16}/>{l}</button>)}</div>
+      {theme==='system'&&<p className="ssub" style={{marginTop:10}}>Follows your computer's light or dark setting.</p>}</div>
+    <div className="card"><h3>Change Password</h3><p className="sub" style={{marginBottom:14}}>Use at least 8 characters. You stay logged in on this device.</p><form onSubmit={submit}>
+      <PwField l="Current Password" value={cur} onChange={e=>setCur(e.target.value)} required autoComplete="current-password"/>
+      <PwField l="New Password" value={p} onChange={e=>setP(e.target.value)} required minLength="8" autoComplete="new-password"/>
+      <PwField l="Confirm New Password" value={c} onChange={e=>setC(e.target.value)} required autoComplete="new-password"/>
+      <button className="btn" disabled={busy}>Change Password</button></form></div>
+  </div>;
 }
 function Notifications({go,refresh}){
   const [rows,setRows]=useState([]);
   useEffect(()=>{api('/notifications').then(setRows);api('/notifications/read','POST').then(refresh)},[]);
   return <div className="card">{rows.map(n=><div className="nt" key={n.id}><div className="ic"><Ic n="bell" s={18}/></div><div>
-    {n.rid&&<b><a className="l" onClick={()=>go('detail',n.rid)}>{n.rid}</a></b>} <small style={{color:'#64748b'}}>{n.created_at}</small>
+    {n.rid&&<b><a className="l" onClick={()=>go('detail',n.rid)}>{n.rid}</a></b>} <small style={{color:'var(--mu)'}}>{n.created_at}</small>
     {n.message.split('\n').map((l,i)=><div key={i}>{l}</div>)}</div></div>)}{!rows.length&&<div className="empty">No notifications.</div>}</div>;
 }
 
@@ -1104,7 +1168,7 @@ function AdminPanel({r,act}){
   const submit=e=>{e.preventDefault();const to=email.trim();
     run('/assign',{email:to,cc},d=>d.email_error?`Assigned to ${to}, but the email was NOT sent: ${d.email_error}`:`Assigned to ${to}. Email sent.`)};
   return <div><h3>Admin Actions</h3>
-    {!r.is_owner&&<div className="ownbox"><div><b>Take Ownership</b><div style={{color:'#64748b'}}>Become responsible for this ticket and resolve and close it yourself.</div></div>
+    {!r.is_owner&&<div className="ownbox"><div><b>Take Ownership</b><div style={{color:'var(--mu)'}}>Become responsible for this ticket and resolve and close it yourself.</div></div>
       <button className="btn" disabled={busy} onClick={()=>run('/take-ownership',undefined,`You now own ${r.rid}. Use Start Work when you begin.`)}><Ic n="user" s={16}/> Take Ownership</button></div>}
     <form onSubmit={submit} style={{maxWidth:560,marginTop:18}}><h4 style={{margin:'0 0 8px'}}>{r.assignee_id?'Reassign to a team member':'Assign to a team member'}</h4>
       <PersonPicker value={email} onChange={setEmail}/>
@@ -1193,7 +1257,7 @@ function Detail({id,me,flash,refresh}){
   const send=async e=>{e.preventDefault();if(await act('/comments',{body}))setBody('')};
   const cur=TRACK.indexOf(r.status==='ON HOLD'?'IN PROGRESS':r.status);
   return <div className="card"><div style={{display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}><h2 style={{margin:0}}>{r.rid}</h2><Badge v={r.status}/></div>
-    <h3 style={{margin:'6px 0 16px',color:'#475569',fontWeight:500}}>{r.title}</h3>
+    <h3 style={{margin:'6px 0 16px',color:'var(--mu)',fontWeight:500}}>{r.title}</h3>
     <Tabs v={tab} set={setTab} items={[['details','Details'],['tracker','Tracker'],['conv','Conversation'],['history','Audit History']]}/>
     {tab==='details'&&<div><table className="kv"><tbody>
       <Row k="Requester">{`${r.rname} <${r.remail}>`}</Row><Row k="Type">{r.type}</Row><Row k="Priority"><Badge v={r.priority}/></Row><Row k="Environment">{r.env}</Row>
@@ -1214,7 +1278,7 @@ function Detail({id,me,flash,refresh}){
         {i<TRACK.length-1&&(([a,b])=><span className={'seg'+(i<cur?' done':i===cur&&r.status!=='CLOSED'?' now':'')+(tip===i?' open':'')} tabIndex="0"
           onClick={()=>setTip(tip===i?null:i)} onBlur={()=>setTip(null)}><span className="tip">{a}{b&&<small>{b}</small>}</span></span>)(segText(r,i,cur))}</div>)}</div>
       {r.tse?.NEW&&<p><b>Total time:</b> {dur((r.tse.CLOSED||r.now)-r.tse.NEW)}{r.tse.CLOSED?' (New → Closed)':' so far'}{r.hold_secs>=1?`, including ${dur(r.hold_secs)} on hold`:''}
-        <span style={{color:'#64748b'}}> · Hover or tap a line to see the time between steps</span></p>}
+        <span style={{color:'var(--mu)'}}> · Hover or tap a line to see the time between steps</span></p>}
       <p><b>Current Status:</b> <Badge v={r.status}/> &nbsp; <b>Owner:</b> {owner(r)}</p>{r.status==='CLOSED'&&(r.access?<p><b>Result:</b> {r.deploy_status}</p>:<p><b>Deployment URL:</b> <Url u={r.deploy_url}/></p>)}</div>}
     {tab==='conv'&&<div><div className="chat">{r.comments.map((m,i)=><div key={i} className={'msg '+(m.author_id===me.id?'me':'')}><small><b>{m.name}</b> ({ROLE_NAME[m.role]}) · {m.created_at}</small>{m.body}</div>)}
       {!r.comments.length&&<div className="empty">No messages yet.</div>}</div>
@@ -1239,10 +1303,10 @@ function Shell({me,page,go,logout,children}){
     ...(isA?[['queue','queue','All Tickets'],['assigned','user','My Owned Tickets'],['users','users','Users & Roles']]
     :me.role==='engineer'?[['assigned','user','Assigned to Me'],['raise','plus','Raise Request'],['my','list','My Requests']]
     :[['raise','plus','Raise Request'],['my','list','My Requests']]),
-    ['notifs','bell','Notifications'],['changepw','key','Change Password']];
+    ['notifs','bell','Notifications']];
   const home=isA?'queue':me.role==='engineer'?'assigned':'my';
   const active=(page.n==='detail'||page.n==='submitted')?home:page.n;
-  const titles={dashboard:isA?'Admin Dashboard':'Dashboard',raise:'Raise Request',my:'My Requests',assigned:isA?'My Owned Tickets':'Assigned to Me',queue:'All Tickets',users:'Users & Roles',notifs:'Notifications',changepw:'Change Password',detail:'Ticket '+(page.a||''),submitted:'Request Submitted'};
+  const titles={dashboard:isA?'Admin Dashboard':'Dashboard',raise:'Raise Request',my:'My Requests',assigned:isA?'My Owned Tickets':'Assigned to Me',queue:'All Tickets',users:'Users & Roles',notifs:'Notifications',settings:'Settings',detail:'Ticket '+(page.a||''),submitted:'Request Submitted'};
   const ini=me.name.split(' ').map(x=>x[0]).join('').slice(0,2).toUpperCase();
   const nav2=k=>{setOpen(false);go(k)};
   return <div className="app"><div className={'shade '+(open?'on':'')} onClick={()=>setOpen(false)}/>
@@ -1251,6 +1315,7 @@ function Shell({me,page,go,logout,children}){
       <div className="menu">{nav.map(([k,ic,l])=><div key={k} className={'nl '+(active===k?'on':'')} onClick={()=>nav2(k)}><Ic n={ic}/>{l}
         {k==='notifs'&&me.unread>0&&<span className="cnt">{me.unread}</span>}</div>)}</div>
       <div className="usr"><div className="av">{ini}</div><div className="i"><b>{me.name}</b><small>{ROLE_NAME[me.role]}</small></div></div>
+      <div className={'nl set '+(active==='settings'?'on':'')} onClick={()=>nav2('settings')}><Ic n="gear"/>Settings</div>
       <div className="nl out" onClick={logout}><Ic n="out"/>Logout</div>
     </aside>
     <div className="main"><div className="top"><button className="burger" onClick={()=>setOpen(true)}><Ic n="menu"/></button><h1>{titles[page.n]||''}</h1>
@@ -1302,7 +1367,7 @@ function App(){
     else if(n==='queue'&&isA)c=<TicketList key={'queue'+page.a} src="/queue" initial={page.a} go={go} requester/>;
     else if(n==='users'&&isA)c=<Users me={me} flash={flash}/>;
     else if(n==='notifs')c=<Notifications go={go} refresh={loadMe}/>;
-    else if(n==='changepw')c=<ChangePassword flash={flash} go={go}/>;
+    else if(n==='settings')c=<Settings flash={flash}/>;
     else if(n==='detail')c=<Detail key={page.a} id={page.a} me={me} flash={flash} refresh={loadMe}/>;
     else c=dash;
     body=<Shell me={me} page={page} go={go} logout={logout}>{c}</Shell>;
