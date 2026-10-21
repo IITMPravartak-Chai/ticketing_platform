@@ -1,10 +1,12 @@
 # mlops_service_desk.py  |  MLOps Service Desk: FastAPI + PostgreSQL backend with a React frontend, in one file.
 # Setup:  docker compose up -d   |   pip install -r requirements.txt   |   python mlops_service_desk.py   |   open http://127.0.0.1:8000
-# Config (.env or environment): DATABASE_URL, SECRET_KEY, APP_URL, ADMIN_EMAIL, ADMIN_PASSWORD, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM.
-# Admin (auto-created on first run): admin@example.com / Admin@123 unless ADMIN_EMAIL / ADMIN_PASSWORD are set.
+# Config (.env or environment): DATABASE_URL, SECRET_KEY, APP_URL, ADMIN_EMAILS, ADMIN_PASSWORD, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM.
+# Admins: every address in ADMIN_EMAILS (or ADMIN_EMAIL) is made an admin on each start; missing accounts are created
+# with ADMIN_PASSWORD (or without a password, to activate with "Create account"). Existing passwords are never reset.
 # Roles: user (raises tickets), engineer (works tickets assigned to them), admin (assigns, takes ownership, manages roles).
 # Only a ticket's owner (its assignee) can start, hold, resume and close it. Every action is written to ticket_history.
 # Tools:  python mlops_service_desk.py --test-email you@example.com   |   python mlops_service_desk.py --import-sqlite servicedesk.db
+#         python mlops_service_desk.py --ensure-admins   (repairs admin roles from ADMIN_EMAILS without starting the server)
 # The React frontend loads React + Babel from cdnjs, so the browser needs internet access.
 import os, re, sys, json, hmac, hashlib, base64, time, smtplib, secrets, logging
 from concurrent.futures import ThreadPoolExecutor
@@ -127,6 +129,7 @@ def tx():
     with pool.connection() as c:
         with c.transaction():
             yield c
+DEFAULT_ADMIN_PW = "Admin@123"  # only used to warn when an admin still has this well-known password
 def hash_pw(p):
     s = secrets.token_hex(8); return s + "$" + hashlib.pbkdf2_hmac("sha256", p.encode(), s.encode(), 100000).hex()
 def check_pw(p, h):
@@ -139,12 +142,42 @@ def start_db():
         raise RuntimeError("PostgreSQL is not reachable") from None
     with tx() as c:
         c.execute(SCHEMA)
-        if not c.execute("select 1 from users where role='admin'").fetchone():
-            e = os.environ.get("ADMIN_EMAIL", "admin@example.com").lower()
-            c.execute("""insert into users(name,email,pw_hash,role) values(%s,%s,%s,'admin')
-                         on conflict (email) do update set role='admin', updated_at=now()""",
-                      ("MLOps Admin", e, hash_pw(os.environ.get("ADMIN_PASSWORD", "Admin@123"))))
+        admins = ensure_admins(c)
     log.info("Connected to PostgreSQL at %s", safe_url(DATABASE_URL))
+    return admins
+
+def configured_admin_emails():
+    # ADMIN_EMAILS (comma-separated) plus the older single ADMIN_EMAIL, trimmed, lowercased, de-duplicated
+    raw = re.split(r"[,;\s]+", f"{os.environ.get('ADMIN_EMAILS', '')},{os.environ.get('ADMIN_EMAIL', '')}")
+    out = []
+    for e in (x.strip().lower() for x in raw if x.strip()):
+        if not EMAIL_RE.match(e): log.error("Ignoring invalid admin email in ADMIN_EMAILS/ADMIN_EMAIL: %r", e)
+        elif e not in out: out.append(e)
+    return out
+def ensure_admins(c):
+    # Runs on every start (and with --ensure-admins). Every configured email ends up as an admin:
+    # existing accounts are promoted, missing ones are created. Existing passwords are never changed,
+    # and admins who are not listed are left alone.
+    pw = os.environ.get("ADMIN_PASSWORD", "")
+    for e in configured_admin_emails():
+        x = c.execute("select id, role from users where email=%s for update", (e,)).fetchone()
+        if not x:
+            # Without ADMIN_PASSWORD the account is created without a password; the owner activates it
+            # with "Create account" (a code is emailed to that address) and keeps the admin role.
+            c.execute("insert into users(name,email,pw_hash,role) values(%s,%s,%s,'admin')", (name_from(e), e, hash_pw(pw) if pw else None))
+            audit(c, None, "ADMIN_CREATED", e, "Created from ADMIN_EMAILS" + ("" if pw else " without a password; activate with Create account"))
+            log.info("Created admin account %s%s", e, "" if pw else " (no password yet: activate it with 'Create account')")
+        elif x["role"] != "admin":
+            c.execute("update users set role='admin', updated_at=now() where id=%s", (x["id"],))
+            audit(c, None, "ROLE_CHANGED", e, f"{x['role']} -> admin (listed in ADMIN_EMAILS)")
+            log.info("Promoted %s from %s to admin (listed in ADMIN_EMAILS)", e, x["role"])
+    admins = c.execute("select email, pw_hash from users where role='admin' order by id").fetchall()
+    if not admins:
+        log.error("There is no admin account. Set ADMIN_EMAILS in .env and restart, or run: python mlops_service_desk.py --ensure-admins")
+    for a in admins:
+        if a["pw_hash"] and check_pw(DEFAULT_ADMIN_PW, a["pw_hash"]):
+            log.warning("Admin %s still uses the default password %s. Change it now (Change Password in the app).", a["email"], DEFAULT_ADMIN_PW)
+    return [a["email"] for a in admins]
 
 @asynccontextmanager
 async def lifespan(app):
@@ -227,6 +260,7 @@ class RegIn(BaseModel): name: str; email: str
 class EmailIn(BaseModel): email: str
 class VerIn(BaseModel): email: str; code: str
 class PwIn(BaseModel): ticket: str; password: str
+class ChangePwIn(BaseModel): current: str; password: str
 class LoginIn(BaseModel): email: str; password: str
 class ReqIn(BaseModel):
     title: str; description: str; type: str = "Deployment Request"; priority: str = "MEDIUM"
@@ -290,6 +324,14 @@ def login(b: LoginIn):
     if u and not u["pw_hash"]: raise HTTPException(400, "This account isn't activated yet. Use 'Create account' with this email to set a password.")
     if not u or not check_pw(b.password, u["pw_hash"]): raise HTTPException(400, "Invalid email or password")
     return {"token": sign({"p": "auth", "uid": u["id"]}, 7 * 86400)}
+@app.post("/api/auth/change-password")
+def change_password(b: ChangePwIn, u=Depends(user)):
+    # Signed-in users change their own password; works for accounts without a real mailbox (e.g. admin@example.com)
+    if not check_pw(b.current, u["pw_hash"]): raise HTTPException(400, "Current password is wrong")
+    if len(b.password) < 8: raise HTTPException(400, "New password must be at least 8 characters")
+    if b.password == b.current: raise HTTPException(400, "New password must be different from the current one")
+    run("update users set pw_hash=%s, updated_at=now() where id=%s", (hash_pw(b.password), u["id"]))
+    return {"ok": True}
 @app.get("/api/me")
 def me(u=Depends(user)):
     n = q("select count(*) c from notifications where user_id=%s and not seen", (u["id"],), True)["c"]
@@ -780,6 +822,7 @@ pause:'M6 4h4v16H6zM14 4h4v16h-4z',
 vol:'M11 5L6 9H2v6h4l5 4V5zM15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14',mute:'M11 5L6 9H2v6h4l5 4V5zM23 9l-6 6M17 9l6 6',
 eye:'M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
 eyeOff:'M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24M1 1l22 22',
+key:'M21 2l-2 2m-7.6 7.6a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4',
 menu:'M3 6h18M3 12h18M3 18h18',check:'M20 6L9 17l-5-5',clock:'M12 6v6l4 2M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z',send:'M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z'};
 const Ic=({n,s=19})=><svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d={P[n]}/></svg>;
 async function api(path,method='GET',body){
@@ -1026,6 +1069,16 @@ function Users({me,flash}){
       <td>{u.active?'Active':'Invited (not signed up yet)'}</td><td>{u.owned_open}</td><td>{u.created_at}</td></tr>)}
     {!rows.length&&<tr><td colSpan="6" className="empty">No users.</td></tr>}</tbody></table></div></div>;
 }
+function ChangePassword({flash,go}){
+  const [cur,setCur]=useState(''),[p,setP]=useState(''),[c,setC]=useState(''),[busy,setBusy]=useState(false);
+  const submit=async e=>{e.preventDefault();if(p!==c)return flash('New passwords do not match');setBusy(true);
+    try{await api('/auth/change-password','POST',{current:cur,password:p});go('dashboard');flash('Password changed.')}catch(x){flash(x.message);setBusy(false)}};
+  return <div className="card" style={{maxWidth:480}}><p className="sub">Use at least 8 characters. You stay logged in on this device.</p><form onSubmit={submit}>
+    <PwField l="Current Password" value={cur} onChange={e=>setCur(e.target.value)} required autoComplete="current-password"/>
+    <PwField l="New Password" value={p} onChange={e=>setP(e.target.value)} required minLength="8" autoComplete="new-password"/>
+    <PwField l="Confirm New Password" value={c} onChange={e=>setC(e.target.value)} required autoComplete="new-password"/>
+    <button className="btn" disabled={busy}>Change Password</button></form></div>;
+}
 function Notifications({go,refresh}){
   const [rows,setRows]=useState([]);
   useEffect(()=>{api('/notifications').then(setRows);api('/notifications/read','POST').then(refresh)},[]);
@@ -1186,10 +1239,10 @@ function Shell({me,page,go,logout,children}){
     ...(isA?[['queue','queue','All Tickets'],['assigned','user','My Owned Tickets'],['users','users','Users & Roles']]
     :me.role==='engineer'?[['assigned','user','Assigned to Me'],['raise','plus','Raise Request'],['my','list','My Requests']]
     :[['raise','plus','Raise Request'],['my','list','My Requests']]),
-    ['notifs','bell','Notifications']];
+    ['notifs','bell','Notifications'],['changepw','key','Change Password']];
   const home=isA?'queue':me.role==='engineer'?'assigned':'my';
   const active=(page.n==='detail'||page.n==='submitted')?home:page.n;
-  const titles={dashboard:isA?'Admin Dashboard':'Dashboard',raise:'Raise Request',my:'My Requests',assigned:isA?'My Owned Tickets':'Assigned to Me',queue:'All Tickets',users:'Users & Roles',notifs:'Notifications',detail:'Ticket '+(page.a||''),submitted:'Request Submitted'};
+  const titles={dashboard:isA?'Admin Dashboard':'Dashboard',raise:'Raise Request',my:'My Requests',assigned:isA?'My Owned Tickets':'Assigned to Me',queue:'All Tickets',users:'Users & Roles',notifs:'Notifications',changepw:'Change Password',detail:'Ticket '+(page.a||''),submitted:'Request Submitted'};
   const ini=me.name.split(' ').map(x=>x[0]).join('').slice(0,2).toUpperCase();
   const nav2=k=>{setOpen(false);go(k)};
   return <div className="app"><div className={'shade '+(open?'on':'')} onClick={()=>setOpen(false)}/>
@@ -1249,6 +1302,7 @@ function App(){
     else if(n==='queue'&&isA)c=<TicketList key={'queue'+page.a} src="/queue" initial={page.a} go={go} requester/>;
     else if(n==='users'&&isA)c=<Users me={me} flash={flash}/>;
     else if(n==='notifs')c=<Notifications go={go} refresh={loadMe}/>;
+    else if(n==='changepw')c=<ChangePassword flash={flash} go={go}/>;
     else if(n==='detail')c=<Detail key={page.a} id={page.a} me={me} flash={flash} refresh={loadMe}/>;
     else c=dash;
     body=<Shell me={me} page={page} go={go} logout={logout}>{c}</Shell>;
@@ -1282,6 +1336,9 @@ if __name__ == "__main__":
     if len(args) == 2 and args[0] == "--test-email":  # checks the SMTP settings without starting the server
         err = mail(args[1], "MLOps Service Desk test email", "If you can read this, email notifications are working.")
         print("\nTest email sent." if not err else f"\nTest email NOT sent: {err}"); sys.exit(1 if err else 0)
+    if args == ["--ensure-admins"]:  # repair: apply ADMIN_EMAILS to the database now, then list the admins
+        admins = start_db()
+        print("\nAdmins now:", ", ".join(admins) or "NONE (set ADMIN_EMAILS in .env)"); pool.close(); sys.exit(0 if admins else 1)
     if len(args) == 2 and args[0] == "--import-sqlite":
         start_db(); import_sqlite(args[1]); pool.close(); sys.exit(0)
     import socket
@@ -1292,5 +1349,5 @@ if __name__ == "__main__":
                   f"  Get-NetTCPConnection -LocalPort {PORT} -State Listen | ForEach-Object {{ Stop-Process -Id $_.OwningProcess -Force }}\n")
             sys.exit(1)
     # Uvicorn prints http://0.0.0.0:PORT, which browsers can't open; show the addresses people should use
-    print(f"\n  Open on this PC:        http://127.0.0.1:{PORT}" + (f"\n  Open from other PCs:    {APP_URL}" if HOST != "127.0.0.1" else "") + "\n", flush=True)
+    print(f"\n  Open on this PC:        http://127.0.0.:{PORT}" + (f"\n  Open from other PCs:    {APP_URL}" if HOST != "127.0.0.1" else "") + "\n", flush=True)
     uvicorn.run(app, host=HOST, port=PORT)
