@@ -15,7 +15,7 @@ from datetime import datetime
 from email.message import EmailMessage
 from typing import Optional
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from pydantic import BaseModel
 import psycopg
 from psycopg.rows import dict_row
@@ -685,7 +685,7 @@ a.l{color:var(--p);cursor:pointer;font-weight:600;text-decoration:none;word-brea
 .app{display:flex;min-height:100vh}
 .side{width:260px;background:linear-gradient(180deg,#0f172a,#1e1b4b);color:#cbd5e1;display:flex;flex-direction:column;position:fixed;top:0;bottom:0;left:0;z-index:40;padding:20px 14px;transition:transform .25s}
 .brand{display:flex;gap:12px;align-items:center;padding:4px 10px 20px;border-bottom:1px solid #ffffff18;margin-bottom:16px}
-.logo{width:42px;height:42px;border-radius:12px;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:grid;place-items:center;color:#fff;font-size:20px;box-shadow:0 6px 16px #6366f166}
+.logo{height:36px;width:auto;display:block;flex-shrink:0;object-fit:contain}
 .brand{cursor:pointer;border-radius:12px}.brand:hover .logo{transform:scale(1.06)}.logo{transition:transform .15s}.brand:focus-visible{outline:2px solid #a5b4fc;outline-offset:2px}
 .brand b{color:#fff;display:block;font-size:16px}.brand small{color:#94a3b8}
 .menu{flex:1;display:flex;flex-direction:column;gap:6px}
@@ -780,7 +780,7 @@ td{padding:13px 12px;border-bottom:1px solid #f1f5f9;text-align:left;vertical-al
 /* ---------- auth ---------- */
 .authwrap{min-height:100vh;display:grid;grid-template-columns:1.1fr 1fr}
 .hero{background:linear-gradient(135deg,#0f172a,#312e81 60%,#6d28d9);color:#fff;padding:60px;display:flex;flex-direction:column;justify-content:center}
-.hero .logo{width:56px;height:56px;font-size:28px}.hero h1{font-size:34px;margin:22px 0 10px}.hero p{color:#c7d2fe;font-size:16px;max-width:430px}
+.hero .logo{height:64px}.hero h1{font-size:34px;margin:22px 0 10px}.hero p{color:#c7d2fe;font-size:16px;max-width:430px}
 .hero ul{list-style:none;padding:0;margin:26px 0 0}.hero li{margin:12px 0;color:#e0e7ff;display:flex;gap:10px;align-items:center}
 .hero li span{width:24px;height:24px;border-radius:50%;background:#ffffff22;display:grid;place-items:center}
 .formside{display:grid;place-items:center;padding:30px;background:#fff}.formcard{width:100%;max-width:420px}
@@ -941,7 +941,7 @@ const CardHead=({title,children})=><div className="chead"><h3>{title}</h3>{child
 
 /* ---------- Auth screens ---------- */
 function AuthShell({children}){
-  return <div className="authwrap"><div className="hero"><div className="logo">⚙</div><h1>MLOps Service Desk</h1>
+  return <div className="authwrap"><div className="hero"><img className="logo" src="/logo.png" alt="CHAI"/><h1>MLOps Service Desk</h1>
     <p>Raise, track and close deployment, access and bug-fix requests in one place.</p>
     <ul>{['Secure email OTP sign-up','Admin assigns or takes ownership of tickets','Email notifications at every step','Full audit trail for every ticket'].map(t=><li key={t}><span><Ic n="check" s={14}/></span>{t}</li>)}</ul></div>
     <div className="formside"><div className="formcard">{children}</div></div></div>;
@@ -1312,7 +1312,7 @@ function Shell({me,page,go,logout,children}){
   const nav2=k=>{setOpen(false);go(k)};
   return <div className="app"><div className={'shade '+(open?'on':'')} onClick={()=>setOpen(false)}/>
     <aside className={'side '+(open?'open':'')}>
-      <div className="brand" role="link" tabIndex="0" title="Go to Dashboard" onClick={()=>nav2('dashboard')} onKeyDown={e=>{if(e.key==='Enter')nav2('dashboard')}}><div className="logo">⚙</div><div><b>MLOps</b><small>Service Desk</small></div></div>
+      <div className="brand" role="link" tabIndex="0" title="Go to Dashboard" onClick={()=>nav2('dashboard')} onKeyDown={e=>{if(e.key==='Enter')nav2('dashboard')}}><img className="logo" src="/logo.png" alt="CHAI"/><div><b>MLOps</b><small>Service Desk</small></div></div>
       <div className="menu">{nav.map(([k,ic,l])=><div key={k} className={'nl '+(active===k?'on':'')} onClick={()=>nav2(k)}><Ic n={ic}/>{l}
         {k==='notifs'&&me.unread>0&&<span className="cnt">{me.unread}</span>}</div>)}</div>
       <div className="usr"><div className="av">{ini}</div><div className="i"><b>{me.name}</b><small>{ROLE_NAME[me.role]}</small></div></div>
@@ -1385,6 +1385,11 @@ PAGE = PAGE.replace("__BUILD__", BUILD)
 
 @app.get("/", response_class=HTMLResponse)
 def index(): return HTMLResponse(PAGE, headers={"Cache-Control": "no-cache"})  # browsers pick up a new version after a restart
+
+LOGO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chai_logo.png")
+
+@app.get("/logo.png", include_in_schema=False)
+def logo(): return FileResponse(LOGO, media_type="image/png", headers={"Cache-Control": "no-cache"})
 
 def import_sqlite(path):
     # One-time copy of user accounts (with their password hashes and roles) from the old SQLite database
