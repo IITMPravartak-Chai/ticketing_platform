@@ -1,6 +1,6 @@
 # MLOps Service Desk
 
-A ticketing platform for MLOps requests: deployments, access requests, bug fixes and general requests. Users raise tickets, an admin assigns each one to an ML Engineer (or takes ownership), and the owner works the ticket through to closure. Every step is emailed to the people involved and recorded in an audit trail.
+A ticketing platform for MLOps requests: deployments, access requests, bug fixes and general requests. Users raise tickets, an admin assigns each one to an MLOps Engineer (or takes ownership), and the owner works the ticket through to closure. Every step is emailed to the people involved and recorded in an audit trail.
 
 | | |
 |---|---|
@@ -281,7 +281,7 @@ On **every start** (and whenever `--ensure-admins` runs) the app reads `ADMIN_EM
 
 | The address in `ADMIN_EMAILS`… | What happens |
 |---|---|
-| already has an account (User or ML Engineer) | It is **promoted to admin**. Its password is not touched |
+| already has an account (User or MLOps Engineer) | It is **promoted to admin**. Its password is not touched |
 | already is an admin | Nothing |
 | has no account, and `ADMIN_PASSWORD` is set | An admin account is created with `ADMIN_PASSWORD` as its starting password |
 | has no account, and `ADMIN_PASSWORD` is empty | An admin account is created **without a password**. The owner activates it with *Create account*, using a code emailed to that address |
@@ -572,7 +572,7 @@ The app logs to `docker compose logs -f app` with Docker, or to the console (`jo
 
 ### Roles
 
-| Action | User | ML Engineer | Admin |
+| Action | User | MLOps Engineer | Admin |
 |---|:-:|:-:|:-:|
 | Raise tickets, see and comment on their own tickets | ✅ | ✅ | |
 | See tickets assigned to them | | ✅ | ✅ |
@@ -582,7 +582,7 @@ The app logs to `docker compose logs -f app` with Docker, or to the console (`jo
 | Change user roles | | | ✅ |
 
 - New sign-ups are **Users**.
-- Assigning a ticket to someone makes them an **ML Engineer**. If they have no account yet, an invited account is created and they activate it with *Create account*.
+- Assigning a ticket to someone makes them an **MLOps Engineer**. If they have no account yet, an invited account is created and they activate it with *Create account*.
 - Admins can't change their own role, and someone who owns open tickets can't be demoted to User.
 
 ### Request types

@@ -686,6 +686,7 @@ a.l{color:var(--p);cursor:pointer;font-weight:600;text-decoration:none;word-brea
 .side{width:260px;background:linear-gradient(180deg,#0f172a,#1e1b4b);color:#cbd5e1;display:flex;flex-direction:column;position:fixed;top:0;bottom:0;left:0;z-index:40;padding:20px 14px;transition:transform .25s}
 .brand{display:flex;gap:12px;align-items:center;padding:4px 10px 20px;border-bottom:1px solid #ffffff18;margin-bottom:16px}
 .logo{width:42px;height:42px;border-radius:12px;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:grid;place-items:center;color:#fff;font-size:20px;box-shadow:0 6px 16px #6366f166}
+.brand{cursor:pointer;border-radius:12px}.brand:hover .logo{transform:scale(1.06)}.logo{transition:transform .15s}.brand:focus-visible{outline:2px solid #a5b4fc;outline-offset:2px}
 .brand b{color:#fff;display:block;font-size:16px}.brand small{color:#94a3b8}
 .menu{flex:1;display:flex;flex-direction:column;gap:6px}
 .nl{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:10px;color:#cbd5e1;cursor:pointer;font-weight:500;font-size:15px;transition:.15s;user-select:none}
@@ -884,7 +885,7 @@ async function api(path,method='GET',body){
   if(!r.ok) throw new Error(typeof d.detail==='string'?d.detail:'Please check your input');
   return d;
 }
-const Badge=({v})=><span className={'b '+v.replace(' ','')}>{v}</span>;
+const Badge=({v,t})=><span className={'b '+v.replace(' ','')}>{t||v}</span>;  // t: display text when it differs from the value (role names)
 const Tabs=({items,v,set})=><div className="tabs">{items.map(([k,l])=><a key={k} className={v===k?'on':''} onClick={()=>set(k)}>{l}</a>)}</div>;
 const F=({l,...p})=><label>{l}<input {...p}/></label>;
 // Password box with an eye button that shows or hides what was typed
@@ -1054,7 +1055,7 @@ function AdminDash({me,go}){
     </div>
     <div className="card"><CardHead title="Team Workload"><span className="sub" style={{margin:0}}>Open tickets each person owns, and tickets they have closed</span></CardHead>
       <div className="tw"><table><thead><tr><th>Name</th><th>Role</th><th>Assigned</th><th>In Progress</th><th>On Hold</th><th>Open Total</th><th>Closed</th></tr></thead><tbody>
-      {d.workload.map(w=><tr key={w.id}><td>{w.name}<div className="ssub">{w.email}{w.active?'':' · invited'}</div></td><td><Badge v={w.role}/></td>
+      {d.workload.map(w=><tr key={w.id}><td>{w.name}<div className="ssub">{w.email}{w.active?'':' · invited'}</div></td><td><Badge v={w.role} t={ROLE_NAME[w.role]}/></td>
         <td>{w.assigned}</td><td>{w.in_progress}</td><td>{w.on_hold}</td><td><b>{w.assigned+w.in_progress+w.on_hold}</b></td><td>{w.closed}</td></tr>)}
       {!d.workload.length&&<tr><td colSpan="7" className="empty">No MLOps Engineers yet. Assign a ticket to someone's email to add one.</td></tr>}</tbody></table></div></div>
     <div className="card"><CardHead title="Recent Activity"/>
@@ -1117,7 +1118,7 @@ function Users({me,flash}){
     Assigning a ticket to someone makes them an MLOps Engineer automatically.</p>
     <div className="tw"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Account</th><th>Open Tickets Owned</th><th>Joined</th></tr></thead><tbody>
     {rows.map(u=><tr key={u.id}><td>{u.name}</td><td>{u.email}</td>
-      <td>{u.id===me.id?<Badge v={u.role}/>:<select value={u.role} onChange={e=>setRole(u,e.target.value)} style={{margin:0,width:'auto',padding:'6px 10px'}}>{ROLES.map(r=><option key={r} value={r}>{ROLE_NAME[r]}</option>)}</select>}</td>
+      <td>{u.id===me.id?<Badge v={u.role} t={ROLE_NAME[u.role]}/>:<select value={u.role} onChange={e=>setRole(u,e.target.value)} style={{margin:0,width:'auto',padding:'6px 10px'}}>{ROLES.map(r=><option key={r} value={r}>{ROLE_NAME[r]}</option>)}</select>}</td>
       <td>{u.active?'Active':'Invited (not signed up yet)'}</td><td>{u.owned_open}</td><td>{u.created_at}</td></tr>)}
     {!rows.length&&<tr><td colSpan="6" className="empty">No users.</td></tr>}</tbody></table></div></div>;
 }
@@ -1311,7 +1312,7 @@ function Shell({me,page,go,logout,children}){
   const nav2=k=>{setOpen(false);go(k)};
   return <div className="app"><div className={'shade '+(open?'on':'')} onClick={()=>setOpen(false)}/>
     <aside className={'side '+(open?'open':'')}>
-      <div className="brand"><div className="logo">⚙</div><div><b>MLOps</b><small>Service Desk</small></div></div>
+      <div className="brand" role="link" tabIndex="0" title="Go to Dashboard" onClick={()=>nav2('dashboard')} onKeyDown={e=>{if(e.key==='Enter')nav2('dashboard')}}><div className="logo">⚙</div><div><b>MLOps</b><small>Service Desk</small></div></div>
       <div className="menu">{nav.map(([k,ic,l])=><div key={k} className={'nl '+(active===k?'on':'')} onClick={()=>nav2(k)}><Ic n={ic}/>{l}
         {k==='notifs'&&me.unread>0&&<span className="cnt">{me.unread}</span>}</div>)}</div>
       <div className="usr"><div className="av">{ini}</div><div className="i"><b>{me.name}</b><small>{ROLE_NAME[me.role]}</small></div></div>
