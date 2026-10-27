@@ -1,6 +1,6 @@
 # MLOps Service Desk
 
-A ticketing platform for MLOps requests: deployments, access requests, bug fixes and general requests. Users raise tickets, an admin assigns each one to an MLOps Engineer (or takes ownership), and the owner works the ticket through to closure. Every step is emailed to the people involved and recorded in an audit trail.
+A ticketing platform for MLOps requests: deployments, access requests and general requests. Users raise tickets, an admin assigns each one to an MLOps Engineer (or takes ownership), and the owner works the ticket through to closure. A failed deployment goes back to the requester with the errors and screenshots, and is redeployed once it is fixed. Every step is emailed to the people involved and recorded in an audit trail.
 
 | | |
 |---|---|
@@ -68,8 +68,9 @@ Inside `mlops_service_desk.py`, the code runs top to bottom in this order:
 | Database | Connection pool and the `SCHEMA` (tables are created or upgraded on every start) |
 | Auth | Sign-up with an emailed 6-digit code, login, forgot password, signed login tokens |
 | Mail / notifications | Sends emails in the background and stores in-app notifications |
-| Tickets | Raise, list, view, assign, take ownership, start, hold, resume, close, comment, screenshots |
-| Users & roles | Admin role management and the team list for assigning |
+| Tickets | Raise, list, view, assign, take ownership, start, hold, resume, close, comment, screenshots, VPN credentials and PDFs |
+| Failed deployments | Failed / Bug Fix Required with screenshots, then fix and resubmit for redeployment |
+| Users & roles | Admin role management, deleting users, the team list for assigning, and each person's own account page |
 | Frontend | The React page (`PAGE`), served at `/` |
 | Command line | `--test-email` and `--import-sqlite` tools, then starts the web server |
 
@@ -303,7 +304,7 @@ ADMIN_PASSWORD=Admin@123
 
 Then, straight after deploying:
 
-1. Log in as `admin@example.com` / `Admin@123`, open **Settings → Change Password** (bottom of the menu), and set a strong password. `admin@example.com` has no real mailbox, so *Forgot password?* can't work for it; Change Password is the only way.
+1. Log in as `admin@example.com` / `Admin@123`, open the profile menu (top right) → **Settings → Change Password**, and set a strong password. `admin@example.com` has no real mailbox, so *Forgot password?* can't work for it; Change Password is the only way.
 2. Log in as `chaigrafana_alerts@iitmpravartak.net` with its existing password and change it the same way. **In the 15 Oct backups this account's password is still `Admin@123`.**
 3. Remove the `ADMIN_PASSWORD` line from `.env` (or leave it empty) and restart: `docker compose up -d`.
 
@@ -579,42 +580,54 @@ The app logs to `docker compose logs -f app` with Docker, or to the console (`jo
 | See every ticket | | | ✅ |
 | Assign or reassign tickets, take ownership | | | ✅ |
 | Start, hold, resume and close a ticket | owner only | owner only | owner only |
-| Change user roles | | | ✅ |
+| Change user roles, delete users | | | ✅ |
 
 - New sign-ups are **Users**.
 - Assigning a ticket to someone makes them an **MLOps Engineer**. If they have no account yet, an invited account is created and they activate it with *Create account*.
 - Admins can't change their own role, and someone who owns open tickets can't be demoted to User.
+- **Deleting a user** (Users & Roles → Delete): someone with no tickets or history is removed completely. Someone with history can no longer sign in, disappears from the user list, gets no more emails, and stays on old tickets as "Name (deleted)"; their email can register again. Admins listed in `ADMIN_EMAILS` and people who own open tickets can't be deleted.
 
 ### Request types
 
 | Type | Extra fields |
 |---|---|
-| Deployment Request | Repository and Branch Name (required), Pull Request URL (optional) |
-| Bug Fix | Repository (required), Pull Request URL (optional), up to 5 screenshots |
-| Access Request | Access to (Server/SSH, Git, Database, AWS, Kubernetes, VPN, Grafana, Other), server or system, access level, needed until, access for |
+| Deployment Request | Repository URL, Branch Name and Pull Request URL (all required) |
+| Access Request | Access to: Git Repository (repository + access level), Model Endpoint (nothing else; the admin sends the URL) or VPN (VPN name). Access is always for the requester |
 | Other | Up to 5 screenshots |
+
+Users don't choose a priority; new tickets are MEDIUM.
 
 ### Ticket workflow
 
 ```
-NEW ──assign / take ownership──▶ ASSIGNED ──Start Work──▶ IN PROGRESS ◀──Resume── ON HOLD
-                                     │                        │  └──Put On Hold (reason)──┘
-                                     └────────────Close Ticket (owner only)─────────────▶ CLOSED
+PENDING ──assign / take ownership──▶ ASSIGNED ──Start Work──▶ IN PROGRESS ◀──Resume── ON HOLD
+                                         │                        │  └──Put On Hold (reason)──┘
+                                         └──────Record Deployment Result (owner only)──────▶ CLOSED
+
+Failed / Bug Fix Required:  IN PROGRESS ──▶ BUG FIX REQUIRED ──requester fixes, Resubmit──▶ IN PROGRESS
 ```
 
-- **Closing:** most tickets record the deployment status, date/time, notes, resolution and URL. Access requests record the result (Granted, Partially Granted or Rejected), the access given and instructions for the user.
+The status stored for a new ticket is `NEW`; the app shows it as **Pending**.
+
+- **Deployment result:** either **Successfully Deployed** (needs only the date/time and deployment URL; version, environment and notes are optional; closes the ticket) or **Failed / Bug Fix Required**. Failure opens a pop-up to describe the errors and attach up to 5 screenshots. The ticket waits as **BUG FIX REQUIRED**, the requester is emailed, and the requester (or the owner, or an admin) fixes it and uses **Resubmit for Redeployment** with what was fixed and, optionally, a new branch or PR. It goes back to the owner, and every attempt stays on the ticket. An admin can also mark someone else's deployment as failed.
+- **Closing an access request:** the result (Access Granted, Partially Granted or Rejected) plus, by type: Git, a short summary of the access given; Model Endpoint, the endpoint URL; VPN, the VPN username and password (never emailed, shown in the ticket behind Show/Copy) and optional PDFs such as the VPN config.
 - **Tracker tab:** hover over (or tap) the line between two steps to see how long that step took. On-hold time is shown separately.
 - **Audit History tab:** every action is listed, with who did it and when.
 
 ### Notifications
 
-- **Emails:** sent at every step to the requester, the owner, admins, anyone in *Also notify*, and the people an access request is for.
-- **In-app:** notifications refresh every 5 seconds with an optional chime.
+- **Emails:** sent at every step to the requester, the owner, admins and anyone in *Also notify*.
+- **In-app:** notifications refresh every 5 seconds with an optional chime (the **Notification on/off** button in the top bar).
+- **Admin dashboard → Recent Activity:** the last 15 actions as plain sentences, e.g. "MLOps assigned MLOPS-0012 to Eng One".
 - **Dashboards:** each role has its own, refreshed every 10 seconds.
 
-### Settings
+### Profile menu, My Account and Settings
 
-**Settings** sits at the bottom of the menu, above Logout. It has two parts:
+The profile button at the top right (initials, name and role) opens **My Account**, **Settings** and **Logout**.
+
+- **My Account:** name, login email, role (with what it allows), member since, and a count of the person's tickets.
+
+**Settings** has two parts:
 
 - **Appearance:** Light, Dark or System (follows the computer's setting). The choice is remembered per browser.
 - **Change Password:** current password, then the new one twice.
@@ -632,14 +645,16 @@ python mlops_service_desk.py --import-sqlite old.db           # one-time import 
 
 | Table | Holds |
 |---|---|
-| `users` | Accounts, roles (`user`, `engineer`, `admin`) and password hashes. No hash means an invited account |
+| `users` | Accounts, roles (`user`, `engineer`, `admin`) and password hashes. No hash means an invited account; `deleted_at` marks a deleted account kept for ticket history |
 | `tickets` | Every ticket: type, priority, environment, repository, PR URL, access details (JSON), status, owner |
 | `ticket_resolutions` | Closure details for each closed ticket |
 | `ticket_history` | Audit trail: every assignment, status change, comment and closure |
 | `comments` | Conversation messages on tickets |
-| `ticket_images` | Screenshots attached to Bug Fix and Other tickets |
+| `ticket_images` | Screenshots on Other tickets and on failed-deployment reports (`bug_id`) |
+| `deploy_bugs` | Failed-deployment reports: the errors, who reported them, and the fix when resubmitted |
+| `ticket_files` | PDFs attached when closing a VPN access request |
 | `notifications` | In-app notifications per user |
-| `audit_log` | Role changes and invited users |
+| `audit_log` | Role changes, invited, created and deleted users |
 | `otps` | Pending email verification codes (expire after 10 minutes) |
 
 Status changes lock the ticket row, so two people can't change the same ticket at once. Multi-step changes run in one transaction, so nothing is half-saved.
