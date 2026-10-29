@@ -194,7 +194,7 @@ def ensure_admins(c):
         log.error("There is no admin account. Set ADMIN_EMAILS in .env and restart, or run: python mlops_service_desk.py --ensure-admins")
     for a in admins:
         if a["pw_hash"] and check_pw(DEFAULT_ADMIN_PW, a["pw_hash"]):
-            log.warning("Admin %s still uses the default password %s. Change it now (Settings > Change Password in the app).", a["email"], DEFAULT_ADMIN_PW)
+            log.warning("Admin %s still uses the default password %s. Change it now: sign in, open the profile menu (top right) > Settings > Change Password.", a["email"], DEFAULT_ADMIN_PW)
     return [a["email"] for a in admins]
 
 @asynccontextmanager
@@ -360,6 +360,16 @@ def me(u=Depends(user)):
     last = q("select message from notifications where user_id=%s and not seen order by id desc limit 1", (u["id"],), True)
     return {"id": u["id"], "name": u["name"], "email": u["email"], "role": u["role"], "unread": n,
             "latest": last["message"].split("\n")[0] if last else None, "build": BUILD}
+@app.get("/api/account")
+def account(u=Depends(user)):
+    # The signed-in person's own account: details plus a short summary of their tickets
+    x = q("select created_at, updated_at from users where id=%s", (u["id"],), True)
+    d = {"name": u["name"], "email": u["email"], "role": u["role"], "joined": x["created_at"], "updated": x["updated_at"],
+         "raised": status_counts("t.requester_id=%s", (u["id"],))}
+    if u["role"] in ("engineer", "admin"):
+        d["owned"] = status_counts("t.assignee_id=%s", (u["id"],))
+        d["closed_by_me"] = count("exists(select 1 from ticket_resolutions r where r.ticket_id=t.id and r.closed_by=%s)", (u["id"],))
+    return d
 
 # ---------------- Tickets: helpers ----------------
 SEL = """select t.*, r.name rname, r.email remail, a.name aname, a.email aemail, ab.name assigned_by_name,
@@ -431,8 +441,7 @@ def dashboard(u=Depends(user)):
         d["all"] = status_counts()
         d["kpi"] = q("""select (select count(*) from tickets where created_at >= now() - interval '7 days') created_7d,
                 (select count(*) from ticket_resolutions where closed_at >= now() - interval '7 days') closed_7d,
-                (select extract(epoch from avg(r.closed_at - t.created_at)) from ticket_resolutions r join tickets t on t.id=r.ticket_id) avg_resolution_s,
-                (select count(*) from tickets where status<>'CLOSED' and priority in ('HIGH','CRITICAL')) urgent_open""", (), True)
+                (select extract(epoch from avg(r.closed_at - t.created_at)) from ticket_resolutions r join tickets t on t.id=r.ticket_id) avg_resolution_s""", (), True)
         d["priority_open"] = dict.fromkeys(PRIOS, 0) | {x["priority"]: x["c"] for x in
                              q("select priority, count(*) c from tickets where status<>'CLOSED' group by priority")}
         d["workload"] = q("""select u.id, u.name, u.email, u.role, (u.pw_hash is not null) active,
@@ -442,8 +451,11 @@ def dashboard(u=Depends(user)):
                 from users u left join tickets t on t.assignee_id=u.id and t.status<>'CLOSED'
                 where u.role in ('engineer','admin') and u.deleted_at is null group by u.id
                 order by count(t.id) desc, u.role='admin', u.name""")
-        d["recent"] = q("""select h.id, h.action, h.from_status, h.to_status, h.created_at, x.name actor, t.rid, t.title
-                from ticket_history h join tickets t on t.id=h.ticket_id left join users x on x.id=h.actor_id order by h.id desc limit 12""")
+        d["recent"] = q("""select h.id, h.action, h.from_status, h.to_status, h.detail, h.created_at, extract(epoch from h.created_at)::float ts,
+                  x.name actor, t.rid, t.title, t.type, res.deploy_status
+                from ticket_history h join tickets t on t.id=h.ticket_id left join users x on x.id=h.actor_id
+                left join ticket_resolutions res on res.ticket_id=t.id order by h.id desc limit 15""")
+        d["now"] = time.time()
         d["users"] = dict.fromkeys(ROLES, 0) | {x["role"]: x["c"] for x in q("select role, count(*) c from users where deleted_at is null group by role")}
         d["users"]["invited"] = q("select count(*) c from users where pw_hash is null and deleted_at is null", (), True)["c"]
     return d
@@ -549,8 +561,9 @@ def create(b: ReqIn, u=Depends(user)):
     elif b.type == "Other":
         repo, pr = "", ""  # general requests have no repository or pull request
     else:
-        if not repo: raise HTTPException(400, "Repository is required")
-        if pr and not URL_RE.match(pr): raise HTTPException(400, "Pull Request URL must start with http:// or https://")
+        if not repo or not pr: raise HTTPException(400, "Repository URL and Pull Request URL are required")
+        if not URL_RE.match(repo): raise HTTPException(400, "Repository URL must start with http:// or https://")
+        if not URL_RE.match(pr): raise HTTPException(400, "Pull Request URL must start with http:// or https://")
     if b.type == "Deployment Request":
         if not branch: raise HTTPException(400, "Branch name is required for a Deployment Request")
         if not BRANCH_RE.match(branch): raise HTTPException(400, "Branch name can only use letters, numbers and _ . / - (no spaces)")
@@ -614,7 +627,7 @@ def _assign(rid, u, email, cc):
     for x in cc_list: notify(x, t["id"], f"Ticket {rid} is now owned by {t['aname']} <{e}>.\n\n{ticket_text(t)}", f"[{rid}] Ticket assigned: {t['title']}")
     if old and old != e: notify(old, t["id"], f"Ticket {rid} is now owned by {t['aname']} <{e}>. You no longer need to work on it.", f"[{rid}] Reassigned")
     if t["remail"] not in (e, u["email"]):
-        notify(t["remail"], t["id"], f"{rid} is now owned by {t['aname']}" + (" (MLOps admin)." if self_take else "."), f"[{rid}] Ticket assigned")
+        notify(t["remail"], t["id"], f"{rid} is now owned by {t['aname']}" + (" (MLOps)." if self_take else "."), f"[{rid}] Ticket assigned")
     return {"ok": True, "email_error": err}
 @app.post("/api/requests/{rid}/assign")
 def assign(rid: str, b: AsgIn, u=Depends(admin)): return _assign(rid, u, b.email, b.cc)
@@ -820,23 +833,33 @@ body{margin:0;font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;ba
 a.l{color:var(--p);cursor:pointer;font-weight:600;text-decoration:none;word-break:break-all}a.l:hover{text-decoration:underline}
 /* ---------- layout ---------- */
 .app{display:flex;min-height:100vh}
-.side{width:260px;background:linear-gradient(180deg,#0f172a,#1e1b4b);color:#cbd5e1;display:flex;flex-direction:column;position:fixed;top:0;bottom:0;left:0;z-index:40;padding:20px 14px;transition:transform .25s}
-.brand{display:flex;gap:12px;align-items:center;padding:4px 10px 20px;border-bottom:1px solid #ffffff18;margin-bottom:16px}
-.logo{height:36px;width:auto;display:block;flex-shrink:0;object-fit:contain}
-.brand{cursor:pointer;border-radius:12px}.brand:hover .logo{transform:scale(1.06)}.logo{transition:transform .15s}.brand:focus-visible{outline:2px solid #a5b4fc;outline-offset:2px}
-.brand b{color:#fff;display:block;font-size:16px}.brand small{color:#94a3b8}
+.side{width:260px;background:linear-gradient(180deg,#0f172a,#1e1b4b);color:#cbd5e1;display:flex;flex-direction:column;position:fixed;top:0;bottom:0;left:0;z-index:40;padding:0 14px 20px;transition:transform .25s}
+.brand{display:flex;justify-content:flex-start;align-items:center;height:72px;padding:0 24px;margin:0 -14px 16px;border-bottom:1px solid #ffffff18}
+.logo{height:52px;width:auto;display:block;object-fit:contain}
+.brand{cursor:pointer}.brand:hover .logo{transform:scale(1.03)}.logo{transition:transform .15s}.brand:focus-visible{outline:2px solid #a5b4fc;outline-offset:2px}
 .menu{flex:1;display:flex;flex-direction:column;gap:6px}
 .nl{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:10px;color:#cbd5e1;cursor:pointer;font-weight:500;font-size:15px;transition:.15s;user-select:none}
 .nl:hover{background:#ffffff14;color:#fff}
 .nl.on{background:linear-gradient(90deg,#6366f1,#7c3aed);color:#fff;box-shadow:0 6px 16px #4f46e555}
 .nl .cnt{margin-left:auto;background:#ef4444;color:#fff;font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px}
 .nl.out:hover{background:#ef4444}
-.usr{border-top:1px solid #ffffff18;padding:14px 8px;margin-top:10px;display:flex;align-items:center;gap:12px}
+.usr{border-top:1px solid #ffffff18;padding:14px 8px;margin-top:10px;display:flex;align-items:center;gap:12px;cursor:pointer;border-radius:12px;transition:.15s}
+.usr:hover{background:#ffffff12}.usr.on{background:#ffffff1f}.usr:focus-visible{outline:2px solid #a5b4fc;outline-offset:2px}
+.av.lg{width:72px;height:72px;font-size:26px}.acct{display:flex;gap:18px;align-items:center;flex-wrap:wrap;margin-bottom:18px}.acct h2{margin:0 0 4px}
 .av{width:42px;height:42px;border-radius:50%;background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;display:grid;place-items:center;font-weight:700;flex:none}
 .usr .i{min-width:0}.usr b{color:#fff;display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.usr small{color:#94a3b8}
 .main{flex:1;margin-left:260px;min-width:0}
-.top{position:sticky;top:0;z-index:30;background:#ffffffe6;backdrop-filter:blur(8px);border-bottom:1px solid var(--bd);padding:16px 28px;display:flex;align-items:center;gap:14px}
+.top{position:sticky;top:0;z-index:30;background:#ffffffe6;backdrop-filter:blur(8px);border-bottom:1px solid var(--bd);height:72px;padding:0 28px;display:flex;align-items:center;gap:14px}
 .top h1{margin:0;font-size:20px}
+.pf{position:relative}
+.pfbtn{display:flex;align-items:center;gap:10px;background:none;border:0;cursor:pointer;padding:5px 12px 5px 6px;border-radius:12px;color:var(--tx);font:inherit;text-align:left}
+.pfbtn:hover,.pfbtn[aria-expanded="true"]{background:#0f172a0d}.pfbtn:focus-visible{outline:2px solid var(--p);outline-offset:2px}
+.av.sm{width:34px;height:34px;font-size:13px}.pfn{display:flex;flex-direction:column;min-width:0;line-height:1.2}.pfn b{font-size:14px;max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.pfn small{font-size:12px;color:var(--mu)}
+.pmenu{position:absolute;right:0;top:calc(100% + 8px);width:270px;background:var(--card);border:1px solid var(--bd);border-radius:14px;box-shadow:0 16px 40px #0f172a2e;padding:8px;z-index:60}
+.pmh{display:flex;gap:12px;align-items:center;padding:8px 8px 12px;border-bottom:1px solid var(--bd);margin-bottom:6px}.pmh>div:last-child{min-width:0}
+.pmh b{display:block}.pmh small{display:block;color:var(--mu);font-size:12.5px;word-break:break-all;margin:2px 0 6px}
+.mi{display:flex;align-items:center;gap:10px;width:100%;background:none;border:0;padding:10px;border-radius:10px;font:inherit;font-weight:500;color:var(--tx);cursor:pointer;text-align:left}
+.mi:hover{background:#4f46e514}.mi.on{background:#4f46e51f;color:var(--p)}.mi.lo{color:#dc2626;margin-top:4px;border-top:1px solid var(--bd);border-radius:0 0 10px 10px}.mi.lo:hover{background:#fef2f2}
 .burger{display:none;background:#fff;border:1px solid var(--bd);border-radius:10px;width:40px;height:40px;cursor:pointer;place-items:center;color:var(--tx)}
 .content{padding:28px;max-width:1180px}
 .shade{display:none}
@@ -883,7 +906,7 @@ td{padding:13px 12px;border-bottom:1px solid #f1f5f9;text-align:left;vertical-al
 .legend b{width:10px;height:10px;border-radius:3px;display:inline-block}
 .hbar{display:grid;grid-template-columns:80px 1fr 36px;gap:10px;align-items:center;margin:8px 0;font-size:13px}.hbar span{font-weight:600;color:#475569}
 .hbar div{background:#f1f5f9;border-radius:99px;height:10px;overflow:hidden}.hbar i{display:block;height:100%;border-radius:99px}.hbar b{text-align:right}
-.act{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid #f1f5f9}.act:last-child{border-bottom:0}.act small{color:var(--mu);white-space:nowrap}.act a.l{white-space:nowrap}
+.act{display:flex;align-items:flex-start;gap:12px;padding:12px 0;border-bottom:1px solid #f1f5f9}.act .aic{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;flex:none}.act .atx{flex:1;min-width:0;line-height:1.45}.act .atx q{color:var(--mu)}.act:last-child{border-bottom:0}.act small{color:var(--mu);white-space:nowrap}.act a.l{white-space:nowrap}
 .note.warn{background:#fffbeb;border-color:#fde68a;color:#92400e}
 /* ---------- tracker ---------- */
 .track{display:flex;margin:26px 0 12px}
@@ -924,7 +947,7 @@ html[data-theme="dark"] .bugrep{background:#2a1215;border-color:#7f1d1d}html[dat
 /* ---------- auth ---------- */
 .authwrap{min-height:100vh;display:grid;grid-template-columns:1.1fr 1fr}
 .hero{background:linear-gradient(135deg,#0f172a,#312e81 60%,#6d28d9);color:#fff;padding:60px;display:flex;flex-direction:column;justify-content:center}
-.hero .logo{height:64px}.hero h1{font-size:34px;margin:22px 0 10px}.hero p{color:#c7d2fe;font-size:16px;max-width:430px}
+.hero .logo{width:300px;max-width:100%;height:auto;margin-bottom:26px}.hero h1{font-size:34px;margin:22px 0 10px}.hero p{color:#c7d2fe;font-size:16px;max-width:430px}
 .hero ul{list-style:none;padding:0;margin:26px 0 0}.hero li{margin:12px 0;color:#e0e7ff;display:flex;gap:10px;align-items:center}
 .hero li span{width:24px;height:24px;border-radius:50%;background:#ffffff22;display:grid;place-items:center}
 .formside{display:grid;place-items:center;padding:30px;background:#fff}.formcard{width:100%;max-width:420px}
@@ -943,6 +966,7 @@ html[data-theme="dark"] .bugrep{background:#2a1215;border-color:#7f1d1d}html[dat
 .seg3 button:hover{color:var(--tx)}.seg3 button.on{background:var(--card);color:var(--p);box-shadow:0 1px 4px #0f172a1a}
 .seg3 button:focus-visible,.nl:focus-visible{outline:2px solid var(--p);outline-offset:2px}
 /* ---------- dark theme (Settings > Appearance; the choice is stored per browser) ---------- */
+html[data-theme="dark"] .pfbtn:hover,html[data-theme="dark"] .pfbtn[aria-expanded="true"]{background:#ffffff12}html[data-theme="dark"] .mi.lo:hover{background:#3a1215}
 html[data-theme="dark"]{color-scheme:dark;--p:#6366f1;--p2:#818cf8;--bg:#0b1020;--card:#141a2c;--tx:#e2e8f0;--mu:#94a3b8;--bd:#263049}
 html[data-theme="dark"] a.l{color:#a5b4fc}
 html[data-theme="dark"] .top{background:#0e1424e6}
@@ -985,7 +1009,7 @@ html[data-theme="dark"] .toast{background:#020617;border:1px solid #334155}
 @media(max-width:960px){
   .side{transform:translateX(-100%)}.side.open{transform:none}.main{margin-left:0}.burger{display:grid}
   .shade.on{display:block;position:fixed;inset:0;background:#0f172a88;z-index:35}
-  .cols{grid-template-columns:1fr}.authwrap{grid-template-columns:1fr}.hero{display:none}.content{padding:18px}.top{padding:14px 18px}
+  .cols{grid-template-columns:1fr}.authwrap{grid-template-columns:1fr}.hero{display:none}.content{padding:18px}.top{padding:0 18px}.sndt{display:none}.pfn b{max-width:80px}.pfn small{display:none}
   .track{flex-wrap:wrap;row-gap:16px}.step{flex:0 0 50%}.seg{display:none}.msg{max-width:92%}
 }
 @media(max-width:560px){.row2{grid-template-columns:1fr}.kv td:first-child{width:120px}
@@ -1030,7 +1054,7 @@ async function api(path,method='GET',body){
   if(!r.ok) throw new Error(typeof d.detail==='string'?d.detail:'Please check your input');
   return d;
 }
-const Badge=({v,t})=><span className={'b '+v.replace(' ','')}>{t||v}</span>;
+const Badge=({v,t})=><span className={'b '+v.replace(' ','')}>{t||(v==='NEW'?'PENDING':v)}</span>;
 // Status badge for a ticket: a failed deployment waiting for its fix shows BUG FIX REQUIRED instead of ON HOLD
 const StatusBadge=({r})=>r.fix_open?<Badge v="BUG FIX" t="BUG FIX REQUIRED"/>:<Badge v={r.status}/>;  // t: display text when it differs from the value (role names)
 const Tabs=({items,v,set})=><div className="tabs">{items.map(([k,l])=><a key={k} className={v===k?'on':''} onClick={()=>set(k)}>{l}</a>)}</div>;
@@ -1079,28 +1103,60 @@ function ReqTable({rows,go,requester,empty='No tickets yet.'}){
 function useLive(load,deps=[],ms=10000){
   useEffect(()=>{const run=()=>load().catch(()=>{});run();const t=setInterval(()=>{if(!document.hidden)run()},ms);return()=>clearInterval(t)},deps);
 }
-const LABEL={NEW:'New','ASSIGNED':'Assigned','IN PROGRESS':'In Progress','ON HOLD':'On Hold',CLOSED:'Closed'};
+const LABEL={NEW:'Pending','ASSIGNED':'Assigned','IN PROGRESS':'In Progress','ON HOLD':'On Hold',CLOSED:'Closed'};
 const SC={NEW:['#1d4ed8','#dbeafe','#3b82f6'],ASSIGNED:['#92400e','#fef3c7','#f59e0b'],'IN PROGRESS':['#075985','#e0f2fe','#0ea5e9'],'ON HOLD':['#475569','#f1f5f9','#94a3b8'],CLOSED:['#166534','#dcfce7','#22c55e']};
 const SICON={NEW:'plus',ASSIGNED:'user','IN PROGRESS':'clock','ON HOLD':'pause',CLOSED:'check'};
 const PC={LOW:'#22c55e',MEDIUM:'#f59e0b',HIGH:'#f97316',CRITICAL:'#ef4444'};
 const fmtDur=s=>s==null?'–':s<3600?`${Math.max(1,Math.round(s/60))} min`:s<172800?`${(s/3600).toFixed(1)} h`:`${(s/86400).toFixed(1)} days`;
 const Stat=({label,value,icon,color,bg,onClick,sub})=><div className={'stat'+(onClick?' click':'')} onClick={onClick} title={onClick?'Open this list':undefined}>
   <div className="ic" style={{background:bg,color}}><Ic n={icon} s={22}/></div><div><small>{label}</small><h2>{value??'–'}</h2>{sub&&<div className="ssub">{sub}</div>}</div></div>;
-function StatusCards({c,pick,total}){
-  return <div className="grid"><Stat label={total} value={c.TOTAL} icon="list" color="#4f46e5" bg="#eef2ff" onClick={()=>pick('ALL')}/>
-    {STAT.map(s=><Stat key={s} label={LABEL[s]} value={c[s]} icon={SICON[s]} color={SC[s][0]} bg={SC[s][1]} onClick={()=>pick(s)}/>)}</div>;
+function StatusCards({c,pick,total,order=['ALL',...STAT]}){
+  return <div className="grid">{order.map(s=>s==='ALL'?<Stat key={s} label={total} value={c.TOTAL} icon="list" color="#4f46e5" bg="#eef2ff" onClick={()=>pick('ALL')}/>
+    :<Stat key={s} label={LABEL[s]} value={c[s]} icon={SICON[s]} color={SC[s][0]} bg={SC[s][1]} onClick={()=>pick(s)}/>)}</div>;
 }
 function StatusBar({c}){
   const t=c.TOTAL||0;
   return <div><div className="sbar">{t?STAT.filter(s=>c[s]).map(s=><i key={s} style={{width:(c[s]/t*100)+'%',background:SC[s][2]}} title={`${LABEL[s]}: ${c[s]}`}/>):<i style={{width:'100%',background:'#e2e8f0'}}/>}</div>
     <div className="legend">{STAT.map(s=><span key={s}><b style={{background:SC[s][2]}}/>{LABEL[s]} <strong>{c[s]}</strong> ({t?Math.round(c[s]/t*100):0}%)</span>)}</div></div>;
 }
+// Recent Activity: one plain sentence per event. Returns [icon, colour, text before the ticket id, text after it].
+const ago=(ts,now)=>{const s=Math.max(0,now-ts);return s<60?'just now':s<3600?`${Math.floor(s/60)} min ago`:s<86400?`${Math.floor(s/3600)} h ago`:s<172800?'yesterday':`${Math.floor(s/86400)} days ago`};
+function actText(h){
+  const kind=h.type==='Deployment Request'?'deployment request':h.type==='Access Request'?'access request':'request';
+  const to=(h.detail.match(/^Assigned to (.+?) </)||[])[1];
+  switch(h.action){
+    case 'CREATED':return ['plus','#4f46e5',`raised a new ${kind}`,''];
+    case 'ASSIGNED':return ['user','#d97706','assigned',to?`to ${to}`:''];
+    case 'REASSIGNED':return ['user','#d97706','reassigned',to?`to ${to}`:''];
+    case 'OWNERSHIP_TAKEN':return ['user','#7c3aed','took ownership of','to work on it'];
+    case 'STATUS_CHANGED':
+      if(h.to_status==='ON HOLD')return ['pause','#64748b','put','on hold'];
+      if(h.from_status==='ON HOLD')return ['clock','#0284c7','resumed work on',''];
+      return ['clock','#0284c7','started work on',''];
+    case 'COMMENTED':return ['send','#0f766e','replied on',''];
+    case 'DEPLOY_FAILED':return ['bell','#dc2626','reported that','failed to deploy, bug fix required'];
+    case 'RESUBMITTED':return ['send','#0284c7','fixed the bugs and resubmitted','for redeployment'];
+    case 'CLOSED':
+      if(h.type==='Access Request')return ['check','#16a34a','closed access request',h.deploy_status?`(${h.deploy_status})`:''];
+      if(h.type==='Deployment Request'&&/Success/.test(h.deploy_status||''))return ['check','#16a34a','deployed','successfully and closed it'];
+      return ['check','#16a34a','closed',h.deploy_status?`(${h.deploy_status})`:''];
+    default:return ['list','#64748b',(ACTION[h.action]||h.action).toLowerCase(),''];
+  }
+}
+function Activity({h,now,go}){
+  const [ic,col,pre,post]=actText(h);
+  return <div className="act"><div className="aic" style={{color:col,background:col+'1a'}}><Ic n={ic} s={16}/></div>
+    <div className="atx"><div><b>{h.actor||'System'}</b> {pre} <a className="l" onClick={()=>go('detail',h.rid)}>{h.rid}</a>{post?' '+post:''}
+      {h.action==='COMMENTED'&&h.detail?<>: <q>{h.detail}</q></>:null}</div>
+      <div className="ssub">{h.title} · {h.type}</div></div>
+    <small title={h.created_at}>{ago(h.ts,now)}</small></div>;
+}
 const CardHead=({title,children})=><div className="chead"><h3>{title}</h3>{children}</div>;
 
 /* ---------- Auth screens ---------- */
 function AuthShell({children}){
-  return <div className="authwrap"><div className="hero"><img className="logo" src="/logo.png" alt="CHAI"/><h1>MLOps Service Desk</h1>
-    <p>Raise, track and close deployment, access and bug-fix requests in one place.</p>
+  return <div className="authwrap"><div className="hero"><img className="logo" src="/logo.png" alt="CHAI MLOps Service Desk"/>
+    <p>Raise, track and close deployment and access requests in one place.</p>
     <ul>{['Secure email OTP sign-up','Admin assigns or takes ownership of tickets','Email notifications at every step','Full audit trail for every ticket'].map(t=><li key={t}><span><Ic n="check" s={14}/></span>{t}</li>)}</ul></div>
     <div className="formside"><div className="formcard">{children}</div></div></div>;
 }
@@ -1196,10 +1252,9 @@ function AdminDash({me,go}){
   if(!d)return <div className="card">Loading…</div>;
   const a=d.all,k=d.kpi,pmax=Math.max(1,...PRIOS.map(p=>d.priority_open[p]));
   return <div><h2 className="hello">Admin Dashboard</h2><p className="sub">Every ticket in the service desk. Click a card to open that list. Updates automatically.</p>
-    <StatusCards c={a} pick={s=>go('queue',s)} total="All Tickets"/>
+    <StatusCards c={a} pick={s=>go('queue',s)} total="All Tickets" order={['NEW','ASSIGNED','IN PROGRESS','ALL','ON HOLD','CLOSED']}/>
     <div className="grid">
       <Stat label="Needs an Owner" value={a.NEW} icon="bell" color="#dc2626" bg="#fef2f2" onClick={()=>go('queue','NEW')} sub="Unassigned new tickets"/>
-      <Stat label="Open High / Critical" value={k.urgent_open} icon="clock" color="#c2410c" bg="#fff7ed" sub="Not closed yet"/>
       <Stat label="Created (7 days)" value={k.created_7d} icon="plus" color="#4f46e5" bg="#eef2ff"/>
       <Stat label="Closed (7 days)" value={k.closed_7d} icon="check" color="#16a34a" bg="#f0fdf4"/>
       <Stat label="Avg. Time to Close" value={fmtDur(k.avg_resolution_s)} icon="clock" color="#7c3aed" bg="#f3e8ff" sub="All closed tickets"/>
@@ -1217,13 +1272,12 @@ function AdminDash({me,go}){
       {d.workload.map(w=><tr key={w.id}><td>{w.name}<div className="ssub">{w.email}{w.active?'':' · invited'}</div></td><td><Badge v={w.role} t={ROLE_NAME[w.role]}/></td>
         <td>{w.assigned}</td><td>{w.in_progress}</td><td>{w.on_hold}</td><td><b>{w.assigned+w.in_progress+w.on_hold}</b></td><td>{w.closed}</td></tr>)}
       {!d.workload.length&&<tr><td colSpan="7" className="empty">No MLOps Engineers yet. Assign a ticket to someone's email to add one.</td></tr>}</tbody></table></div></div>
-    <div className="card"><CardHead title="Recent Activity"/>
-      {d.recent.map(h=><div key={h.id} className="act"><div><b>{h.actor||'System'}</b> {(ACTION[h.action]||h.action).toLowerCase()} <a className="l" onClick={()=>go('detail',h.rid)}>{h.rid}</a>
-        {h.to_status&&h.from_status!==h.to_status?<> → <Badge v={h.to_status}/></>:null}<div className="ssub">{h.title}</div></div><small>{h.created_at}</small></div>)}
+    <div className="card"><CardHead title="Recent Activity"><span className="sub" style={{margin:0}}>The latest 15 things people did. Hover a time to see the exact date.</span></CardHead>
+      {d.recent.map(h=><Activity key={h.id} h={h} now={d.now} go={go}/>)}
       {!d.recent.length&&<div className="empty">No activity yet.</div>}</div></div>;
 }
 function Raise({go,flash}){
-  const [f,setF]=useState({title:'',description:'',type:TYPES[0],priority:'HIGH',env:'Production',repo:'',branch:'',pr_url:''}),[busy,setBusy]=useState(false);
+  const [f,setF]=useState({title:'',description:'',type:TYPES[0],env:'Production',repo:'',branch:'',pr_url:''}),[busy,setBusy]=useState(false);
   const [imgs,setImgs]=useState([]),[ac,setAc]=useState({type:'Git Repository',resource:'',level:'Read only',for:'',until:''});
   const u=k=>e=>setF({...f,[k]:e.target.value}),ua=k=>e=>setAc({...ac,[k]:e.target.value});
   const isAcc=f.type==='Access Request',isOther=f.type==='Other',shots=isOther,[resLabel,resHint]=ACCESS_TYPES[ac.type];
@@ -1233,17 +1287,16 @@ function Raise({go,flash}){
     <label>{isAcc?'Why do you need this access?':'Description'}<textarea rows="4" value={f.description} onChange={u('description')} required
       placeholder={isAcc?'I need to push fixes to the model-service repository.':'Please deploy the model-service to production.'}/></label>
     <div className="row2"><label>Request Type<select value={f.type} onChange={u('type')}>{TYPES.map(t=><option key={t}>{t}</option>)}</select></label>
-    <label>Priority<select value={f.priority} onChange={u('priority')}>{PRIOS.map(t=><option key={t}>{t}</option>)}</select></label>
+    <label>Environment<select value={f.env} onChange={u('env')}>{ENVS.map(t=><option key={t}>{t}</option>)}</select></label></div>
     {isAcc&&<label>Access To<select value={ac.type} onChange={ua('type')}>{Object.keys(ACCESS_TYPES).map(t=><option key={t}>{t}</option>)}</select></label>}
-    <label>Environment<select value={f.env} onChange={u('env')}>{ENVS.map(t=><option key={t}>{t}</option>)}</select></label>
-    {!isAcc&&!isOther&&<F l="Repository" required value={f.repo} onChange={u('repo')} placeholder="ml-model-service"/>}</div>
+    {!isAcc&&!isOther&&<F l="Repository URL" type="url" required value={f.repo} onChange={u('repo')} placeholder="https://github.com/org/ml-model-service"/>}
     {isAcc?<>
       {ac.type!=='Model Endpoint'&&<F l={resLabel} required value={ac.resource} onChange={ua('resource')} placeholder={resHint} maxLength="300"/>}
       {ac.type==='Git Repository'&&<label>Access Level<select value={ac.level} onChange={ua('level')}>{ACCESS_LEVELS.map(t=><option key={t}>{t}</option>)}</select></label>}</>
     :!isOther&&<>
       {f.type==='Deployment Request'&&<F l="Branch Name" required value={f.branch} onChange={u('branch')} placeholder="release/v2.4" maxLength="200"
         pattern="[\w][\w.\/\-]*" title="Letters, numbers and _ . / - only (no spaces)"/>}
-      <F l="Pull Request URL (optional)" type="url" value={f.pr_url} onChange={u('pr_url')} placeholder="https://github.com/.../pull/245"/></>}
+      <F l="Pull Request URL" type="url" required value={f.pr_url} onChange={u('pr_url')} placeholder="https://github.com/.../pull/245"/></>}
     {shots&&<ImgPicker imgs={imgs} set={setImgs} flash={flash}/>}
     <button className="btn" disabled={busy}>Submit Request</button></form></div>;
 }
@@ -1278,6 +1331,30 @@ function Users({me,flash}){
 const getTheme=()=>{try{return localStorage.getItem('theme')||'light'}catch{return 'light'}};
 const applyTheme=t=>{document.documentElement.dataset.theme=(t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme: dark)').matches))?'dark':'light'};
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{if(getTheme()==='system')applyTheme('system')});
+const ROLE_INFO={user:'Raises deployment and access requests and follows them until they are closed.',
+  engineer:'Works on the tickets assigned to you: starts, holds and closes them. You can also raise your own requests.',
+  admin:'Assigns tickets to the team, can take ownership of any ticket, and manages users and roles.'};
+function Account({go,flash}){
+  const [d,setD]=useState(null);
+  useEffect(()=>{api('/account').then(setD).catch(e=>flash(e.message))},[]);
+  if(!d)return <div className="card">Loading…</div>;
+  const ini=d.name.split(' ').map(x=>x[0]).join('').slice(0,2).toUpperCase(),staff=d.role!=='user',isA=d.role==='admin';
+  return <div style={{maxWidth:820}}>
+    <div className="card"><div className="acct"><div className="av lg">{ini}</div><div><h2>{d.name}</h2>
+      <div style={{color:'var(--mu)',marginBottom:8}}>{d.email}</div><Badge v={d.role} t={ROLE_NAME[d.role]}/></div></div>
+      <table className="kv"><tbody>
+        <Row k="Full Name">{d.name}</Row><Row k="Login Email">{d.email}</Row>
+        <Row k="Role"><Badge v={d.role} t={ROLE_NAME[d.role]}/><div className="ssub" style={{marginTop:6}}>{ROLE_INFO[d.role]}</div></Row>
+        <Row k="Account Status">Active</Row><Row k="Member Since">{d.joined}</Row><Row k="Last Changed">{d.updated}</Row></tbody></table>
+      <p className="ssub" style={{marginTop:14}}>{isA?'Roles are managed on the Users & Roles page.':'Only an admin can change your role. Ask an admin if it is wrong.'}</p>
+      <div className="actions"><button className="btn" onClick={()=>go('settings')}><Ic n="key" s={16}/> Change Password</button>
+        {isA&&<button className="btn ghost" onClick={()=>go('users')}><Ic n="users" s={16}/> Users &amp; Roles</button>}</div></div>
+    <div className="card"><CardHead title="Your Tickets"/><div className="grid" style={{marginBottom:0}}>
+      {!isA&&<Stat label="Requests I Raised" value={d.raised.TOTAL} icon="list" color="#4f46e5" bg="#eef2ff" onClick={()=>go('my','ALL')} sub={`${d.raised.OPEN} still open`}/>}
+      {staff&&<Stat label={isA?'Tickets I Own (open)':'Assigned to Me (open)'} value={d.owned.OPEN} icon="user" color="#0369a1" bg="#e0f2fe" onClick={()=>go('assigned','ALL')} sub={`${d.owned.TOTAL} in total`}/>}
+      {staff&&<Stat label="Closed by Me" value={d.closed_by_me} icon="check" color="#16a34a" bg="#f0fdf4" onClick={()=>go('assigned','CLOSED')}/>}</div></div>
+  </div>;
+}
 function Settings({flash}){
   const [theme,setTheme]=useState(getTheme());
   const pick=t=>{setTheme(t);try{localStorage.setItem('theme',t)}catch{}applyTheme(t)};
@@ -1482,7 +1559,7 @@ function Detail({id,me,flash,refresh}){
       <Row k="Requester">{`${r.rname} <${r.remail}>`}</Row><Row k="Type">{r.type}</Row><Row k="Priority"><Badge v={r.priority}/></Row><Row k="Environment">{r.env}</Row>
       {r.access?<><Row k="Access To">{r.access.type}</Row>{r.access.resource?<Row k={ACCESS_TYPES[r.access.type]?.[0]||'Server / System'}><b>{r.access.resource}</b></Row>:null}
         {r.access.level?<Row k="Access Level">{r.access.level}</Row>:null}{r.access.for!==r.remail?<Row k="Access For">{r.access.for.split(',').join(', ')}</Row>:null}{r.access.until?<Row k="Needed Until">{r.access.until}</Row>:null}</>
-      :r.type!=='Other'&&<><Row k="Repository">{r.repo||'-'}</Row>{r.branch?<Row k="Branch"><b>{r.branch}</b></Row>:null}<Row k="Pull Request"><Url u={r.pr_url}/></Row></>}
+      :r.type!=='Other'&&<><Row k="Repository">{/^https?:\/\//.test(r.repo)?<Url u={r.repo}/>:r.repo||'-'}</Row>{r.branch?<Row k="Branch"><b>{r.branch}</b></Row>:null}<Row k="Pull Request"><Url u={r.pr_url}/></Row></>}
       <Row k="Owner">{owner(r)}</Row><Row k="Ownership">{ownership(r)}{r.assigned_at?` on ${r.assigned_at}`:''}</Row>
       {r.cc?<Row k="Also Notified">{r.cc.split(',').join(', ')}</Row>:null}
       {r.status==='CLOSED'?<Row k="Closed By"><b>{`${r.closed_by_name} <${r.closed_by_email}>`}</b>{` on ${r.closed_at}`}</Row>:null}
@@ -1496,7 +1573,7 @@ function Detail({id,me,flash,refresh}){
       {isA&&r.status!=='CLOSED'&&<div className="section"><AdminPanel key={r.assignee_id||0} r={r} act={act}/>
         {!r.access&&!r.fix_open&&!r.is_owner&&r.assignee_id&&<AdminFail act={act} flash={flash}/>}</div>}</div>}
     {tab==='tracker'&&<div><div className="track">{TRACK.map((s,i)=><div key={s} className={'step '+(i<=cur?'done ':'')+(i===cur?'cur':'')}><div className="dot">{i<=cur?<Ic n="check" s={16}/>:i+1}</div>
-      <b>{i===cur&&r.status==='ON HOLD'?(r.fix_open?'BUG FIX REQUIRED':'ON HOLD'):s}</b>{i===cur&&r.status==='ON HOLD'?(r.fix_open?'Waiting for the fix':DESC['ON HOLD']):DESC[s]}<br/>{i<=cur?r.ts[s]||'':''}
+      <b>{i===cur&&r.status==='ON HOLD'?(r.fix_open?'BUG FIX REQUIRED':'ON HOLD'):s==='NEW'?'PENDING':s}</b>{i===cur&&r.status==='ON HOLD'?(r.fix_open?'Waiting for the fix':DESC['ON HOLD']):DESC[s]}<br/>{i<=cur?r.ts[s]||'':''}
         {i<TRACK.length-1&&(([a,b])=><span className={'seg'+(i<cur?' done':i===cur&&r.status!=='CLOSED'?' now':'')+(tip===i?' open':'')} tabIndex="0"
           onClick={()=>setTip(tip===i?null:i)} onBlur={()=>setTip(null)}><span className="tip">{a}{b&&<small>{b}</small>}</span></span>)(segText(r,i,cur))}</div>)}</div>
       {r.tse?.NEW&&<p><b>Total time:</b> {dur((r.tse.CLOSED||r.now)-r.tse.NEW)}{r.tse.CLOSED?' (New → Closed)':' so far'}{r.hold_secs>=1?`, including ${dur(r.hold_secs)} on hold`:''}
@@ -1518,7 +1595,10 @@ function Detail({id,me,flash,refresh}){
 
 /* ---------- Shell with LEFT sidebar ---------- */
 function Shell({me,page,go,logout,children}){
-  const [open,setOpen]=useState(false),[snd,setSnd]=useState(soundOn());
+  const [open,setOpen]=useState(false),[snd,setSnd]=useState(soundOn()),[pm,setPm]=useState(false),pfRef=useRef(null);
+  // Close the profile menu on a click outside it or on Escape
+  useEffect(()=>{if(!pm)return;const h=e=>{if(pfRef.current&&!pfRef.current.contains(e.target))setPm(false)},k=e=>{if(e.key==='Escape')setPm(false)};
+    document.addEventListener('mousedown',h);document.addEventListener('keydown',k);return()=>{document.removeEventListener('mousedown',h);document.removeEventListener('keydown',k)}},[pm]);
   const toggleSnd=()=>{const v=!snd;setSnd(v);try{localStorage.setItem('sound',v?'on':'off')}catch{}if(v)chime(true)};
   const isA=me.role==='admin';
   const nav=[['dashboard','dash','Dashboard'],
@@ -1528,20 +1608,23 @@ function Shell({me,page,go,logout,children}){
     ['notifs','bell','Notifications']];
   const home=isA?'queue':me.role==='engineer'?'assigned':'my';
   const active=(page.n==='detail'||page.n==='submitted')?home:page.n;
-  const titles={dashboard:isA?'Admin Dashboard':'Dashboard',raise:'Raise Request',my:'My Requests',assigned:isA?'My Owned Tickets':'Assigned to Me',queue:'All Tickets',users:'Users & Roles',notifs:'Notifications',settings:'Settings',detail:'Ticket '+(page.a||''),submitted:'Request Submitted'};
+  const titles={dashboard:isA?'Admin Dashboard':'Dashboard',raise:'Raise Request',my:'My Requests',assigned:isA?'My Owned Tickets':'Assigned to Me',queue:'All Tickets',users:'Users & Roles',notifs:'Notifications',settings:'Settings',account:'My Account',detail:'Ticket '+(page.a||''),submitted:'Request Submitted'};
   const ini=me.name.split(' ').map(x=>x[0]).join('').slice(0,2).toUpperCase();
-  const nav2=k=>{setOpen(false);go(k)};
+  const nav2=k=>{setOpen(false);setPm(false);go(k)};
   return <div className="app"><div className={'shade '+(open?'on':'')} onClick={()=>setOpen(false)}/>
     <aside className={'side '+(open?'open':'')}>
-      <div className="brand" role="link" tabIndex="0" title="Go to Dashboard" onClick={()=>nav2('dashboard')} onKeyDown={e=>{if(e.key==='Enter')nav2('dashboard')}}><img className="logo" src="/logo.png" alt="CHAI"/><div><b>MLOps</b><small>Service Desk</small></div></div>
+      <div className="brand" role="link" tabIndex="0" title="Go to Dashboard" onClick={()=>nav2('dashboard')} onKeyDown={e=>{if(e.key==='Enter')nav2('dashboard')}}><img className="logo" src="/logo.png" alt="CHAI MLOps Service Desk"/></div>
       <div className="menu">{nav.map(([k,ic,l])=><div key={k} className={'nl '+(active===k?'on':'')} onClick={()=>nav2(k)}><Ic n={ic}/>{l}
         {k==='notifs'&&me.unread>0&&<span className="cnt">{me.unread}</span>}</div>)}</div>
-      <div className="usr"><div className="av">{ini}</div><div className="i"><b>{me.name}</b><small>{ROLE_NAME[me.role]}</small></div></div>
-      <div className={'nl set '+(active==='settings'?'on':'')} onClick={()=>nav2('settings')}><Ic n="gear"/>Settings</div>
-      <div className="nl out" onClick={logout}><Ic n="out"/>Logout</div>
     </aside>
     <div className="main"><div className="top"><button className="burger" onClick={()=>setOpen(true)}><Ic n="menu"/></button><h1>{titles[page.n]||''}</h1>
-      <button className="btn ghost" style={{marginLeft:'auto',padding:'8px 12px'}} onClick={toggleSnd} title={snd?'Mute notification sound':'Turn on notification sound'}><Ic n={snd?'vol':'mute'} s={18}/>{snd?'Sound on':'Sound off'}</button></div>
+      <button className="btn ghost" style={{marginLeft:'auto',padding:'8px 12px'}} onClick={toggleSnd} title={snd?'Turn off the notification sound':'Turn on the notification sound'}><Ic n={snd?'vol':'mute'} s={18}/><span className="sndt">{snd?'Notification on':'Notification off'}</span></button>
+      <div className="pf" ref={pfRef}><button className="pfbtn" onClick={()=>setPm(!pm)} aria-haspopup="menu" aria-expanded={pm} title={`${me.name} (${ROLE_NAME[me.role]})`}>
+        <span className="av sm">{ini}</span><span className="pfn"><b>{me.name}</b><small>{ROLE_NAME[me.role]}</small></span></button>
+        {pm&&<div className="pmenu" role="menu"><div className="pmh"><div className="av">{ini}</div><div><b>{me.name}</b><small>{me.email}</small><Badge v={me.role} t={ROLE_NAME[me.role]}/></div></div>
+          <button className={'mi '+(active==='account'?'on':'')} role="menuitem" onClick={()=>nav2('account')}><Ic n="user" s={18}/>My Account</button>
+          <button className={'mi '+(active==='settings'?'on':'')} role="menuitem" onClick={()=>nav2('settings')}><Ic n="gear" s={18}/>Settings</button>
+          <button className="mi lo" role="menuitem" onClick={()=>{setPm(false);logout()}}><Ic n="out" s={18}/>Logout</button></div>}</div></div>
       <div className="content">{children}</div></div></div>;
 }
 
@@ -1590,6 +1673,7 @@ function App(){
     else if(n==='users'&&isA)c=<Users me={me} flash={flash}/>;
     else if(n==='notifs')c=<Notifications go={go} refresh={loadMe}/>;
     else if(n==='settings')c=<Settings flash={flash}/>;
+    else if(n==='account')c=<Account go={go} flash={flash}/>;
     else if(n==='detail')c=<Detail key={page.a} id={page.a} me={me} flash={flash} refresh={loadMe}/>;
     else c=dash;
     body=<Shell me={me} page={page} go={go} logout={logout}>{c}</Shell>;
@@ -1641,5 +1725,5 @@ if __name__ == "__main__":
                   f"  Get-NetTCPConnection -LocalPort {PORT} -State Listen | ForEach-Object {{ Stop-Process -Id $_.OwningProcess -Force }}\n")
             sys.exit(1)
     # Uvicorn prints http://0.0.0.0:PORT, which browsers can't open; show the addresses people should use
-    print(f"\n  Open on this PC:        http://127.0.0.:{PORT}" + (f"\n  Open from other PCs:    {APP_URL}" if HOST != "127.0.0.1" else "") + "\n", flush=True)
+    print(f"\n  Open on this PC:        http://127.0.0.1:{PORT}" + (f"\n  Open from other PCs:    {APP_URL}" if HOST != "127.0.0.1" else "") + "\n", flush=True)
     uvicorn.run(app, host=HOST, port=PORT)
