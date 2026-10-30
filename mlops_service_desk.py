@@ -3,13 +3,15 @@
 # Config (.env or environment): DATABASE_URL, SECRET_KEY, APP_URL, ADMIN_EMAILS, ADMIN_PASSWORD, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM.
 # Admins: every address in ADMIN_EMAILS (or ADMIN_EMAIL) is made an admin on each start; missing accounts are created
 # with ADMIN_PASSWORD (or without a password, to activate with "Create account"). Existing passwords are never reset.
+# Users: every entry in USER_ACCOUNTS (Name|email|password, comma-separated) is created as a User on each start if it is
+# missing. Existing accounts are left as they are, so a password someone has changed is never reset.
 # Roles: user (raises tickets), engineer (works tickets assigned to them), admin (assigns, takes ownership, manages roles).
 # Only a ticket's owner (its assignee) can start, hold, resume and close it. Every action is written to ticket_history.
 # Deployments end as "Successfully Deployed" (closes the ticket) or "Failed / Bug Fix Required": the owner or an admin
 # describes the bugs with screenshots, the ticket waits ON HOLD for the fix, and the requester (or the owner or an admin)
 # resubmits it for redeployment, which sends it back to the owner.
 # Tools:  python mlops_service_desk.py --test-email you@example.com   |   python mlops_service_desk.py --import-sqlite servicedesk.db
-#         python mlops_service_desk.py --ensure-admins   (repairs admin roles from ADMIN_EMAILS without starting the server)
+#         python mlops_service_desk.py --ensure-admins   (applies ADMIN_EMAILS and USER_ACCOUNTS without starting the server)
 # The React frontend loads React + Babel from cdnjs, so the browser needs internet access.
 import os, re, sys, json, hmac, hashlib, base64, time, smtplib, secrets, logging
 from concurrent.futures import ThreadPoolExecutor
@@ -161,6 +163,7 @@ def start_db():
     with tx() as c:
         c.execute(SCHEMA)
         admins = ensure_admins(c)
+        ensure_users(c)
     log.info("Connected to PostgreSQL at %s", safe_url(DATABASE_URL))
     return admins
 
@@ -172,6 +175,33 @@ def configured_admin_emails():
         if not EMAIL_RE.match(e): log.error("Ignoring invalid admin email in ADMIN_EMAILS/ADMIN_EMAIL: %r", e)
         elif e not in out: out.append(e)
     return out
+def configured_users():
+    # USER_ACCOUNTS=Name|email|password,Name|email|password  ->  [(name, email, password)]; bad entries are logged and skipped
+    out = []
+    for item in (x.strip() for x in os.environ.get("USER_ACCOUNTS", "").split(",") if x.strip()):
+        parts = [x.strip() for x in item.split("|")]
+        if len(parts) != 3 or not parts[0]:
+            log.error("Ignoring USER_ACCOUNTS entry %r: use Name|email|password", item.split("|")[0]); continue
+        name, email, pw = parts[0], parts[1].lower(), parts[2]
+        if not EMAIL_RE.match(email): log.error("Ignoring USER_ACCOUNTS entry for %r: invalid email", name)
+        elif len(pw) < 8: log.error("Ignoring USER_ACCOUNTS entry for %s: password must be at least 8 characters", email)
+        elif email not in (e for _, e, _ in out): out.append((name, email, pw))
+    return out
+def ensure_users(c):
+    # Runs on every start: creates the USER_ACCOUNTS people who don't have an account yet. Never changes an existing
+    # account (name, role or password); an invited account without a password is activated with the configured one.
+    admins = configured_admin_emails()
+    for name, email, pw in configured_users():
+        if email in admins: continue  # ADMIN_EMAILS wins
+        x = c.execute("select id, pw_hash, deleted_at from users where email=%s for update", (email,)).fetchone()
+        if not x:
+            c.execute("insert into users(name,email,pw_hash,role) values(%s,%s,%s,'user')", (name, email, hash_pw(pw)))
+            audit(c, None, "USER_CREATED", email, f"{name} created from USER_ACCOUNTS")
+            log.info("Created user account %s (%s) from USER_ACCOUNTS", email, name)
+        elif not x["pw_hash"] and not x["deleted_at"]:
+            c.execute("update users set pw_hash=%s, updated_at=now() where id=%s", (hash_pw(pw), x["id"]))
+            audit(c, None, "USER_ACTIVATED", email, "Password set from USER_ACCOUNTS")
+            log.info("Activated invited account %s from USER_ACCOUNTS", email)
 def ensure_admins(c):
     # Runs on every start (and with --ensure-admins). Every configured email ends up as an admin:
     # existing accounts are promoted, missing ones are created. Existing passwords are never changed,

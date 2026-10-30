@@ -310,6 +310,20 @@ Then, straight after deploying:
 
 Until an admin's password is changed, every start logs `Admin ... still uses the default password Admin@123`.
 
+### User accounts from `.env`
+
+`USER_ACCOUNTS` lists people who should always have a **User** account. On every start, the app creates any of them that are missing, so they exist on a new server even without a database dump:
+
+```ini
+USER_ACCOUNTS=Asha|asha@example.com|<starting password>,Ravi|ravi@example.com|<starting password>
+```
+
+- **Format:** `Name|email|password`, with entries separated by commas. Passwords need at least 8 characters and can't contain `,` or `|`.
+- **Existing accounts are never changed.** A password someone changed in the app stays changed after a restart, and roles set in Users & Roles are kept.
+- **Bad entries:** an entry with a bad email, a short password or the wrong format is skipped, with an `Ignoring USER_ACCOUNTS entry` line in the log.
+- **Admins:** an address that is also in `ADMIN_EMAILS` is made an admin instead.
+- Ask everyone to change their starting password after the first login: profile menu → Settings → Change Password.
+
 ### Repair admin roles
 
 Run this when someone who should be an admin shows up as a User. It applies `ADMIN_EMAILS` straight away and lists the admins, without restarting the app. It's safe to run any number of times.
