@@ -310,6 +310,20 @@ Then, straight after deploying:
 
 Until an admin's password is changed, every start logs `Admin ... still uses the default password Admin@123`.
 
+### User accounts from `.env`
+
+`USER_ACCOUNTS` lists people who should always have a **User** account. On every start, the app creates any of them that are missing, so they exist on a new server even without a database dump:
+
+```ini
+USER_ACCOUNTS=Asha|asha@example.com|<starting password>,Ravi|ravi@example.com|<starting password>
+```
+
+- **Format:** `Name|email|password`, with entries separated by commas. Passwords need at least 8 characters and can't contain `,` or `|`.
+- **Existing accounts are never changed.** A password someone changed in the app stays changed after a restart, and roles set in Users & Roles are kept.
+- **Bad entries:** an entry with a bad email, a short password or the wrong format is skipped, with an `Ignoring USER_ACCOUNTS entry` line in the log.
+- **Admins:** an address that is also in `ADMIN_EMAILS` is made an admin instead.
+- Ask everyone to change their starting password after the first login: profile menu → Settings → Change Password.
+
 ### Repair admin roles
 
 Run this when someone who should be an admin shows up as a User. It applies `ADMIN_EMAILS` straight away and lists the admins, without restarting the app. It's safe to run any number of times.
@@ -610,6 +624,7 @@ Failed / Bug Fix Required:  IN PROGRESS ──▶ BUG FIX REQUIRED ──request
 The status stored for a new ticket is `NEW`; the app shows it as **Pending**.
 
 - **Deployment result:** either **Successfully Deployed** (needs only the date/time and deployment URL; version, environment and notes are optional; closes the ticket) or **Failed / Bug Fix Required**. Failure opens a pop-up to describe the errors and attach up to 5 screenshots. The ticket waits as **BUG FIX REQUIRED**, the requester is emailed, and the requester (or the owner, or an admin) fixes it and uses **Resubmit for Redeployment** with what was fixed and, optionally, a new branch or PR. It goes back to the owner, and every attempt stays on the ticket. An admin can also mark someone else's deployment as failed.
+- **Deployment details (Deployment Requests):** choosing **Successfully Deployed** opens the deployment details form, which must be filled in to close the ticket. **CI/CD** also asks for the pipeline name, run ID and commit. Both ask for the application, server name and IP, environment (Development, Testing or Production), date/time, version and notes; *Deployed By* is the signed-in person. The record and the closure are saved in one transaction, and a retried submit never creates a second record. Records are confidential: only admins can see them, on the **Deployment Details** page (search, type and environment filters, full record per row, and a **Download Excel** button in the top-right corner that saves the records shown as an .xlsx file; each download is written to the audit log) and from a closed ticket. Engineers fill in the form but can't list or read records, even through the API. Requesters only get the status, date, application URL, version and environment.
 - **Closing an access request:** the result (Access Granted, Partially Granted or Rejected) plus, by type: Git, a short summary of the access given; Model Endpoint, the endpoint URL; VPN, the VPN username and password (never emailed, shown in the ticket behind Show/Copy) and optional PDFs such as the VPN config.
 - **Tracker tab:** hover over (or tap) the line between two steps to see how long that step took. On-hold time is shown separately.
 - **Audit History tab:** every action is listed, with who did it and when.
@@ -653,6 +668,7 @@ python mlops_service_desk.py --import-sqlite old.db           # one-time import 
 | `ticket_images` | Screenshots on Other tickets and on failed-deployment reports (`bug_id`) |
 | `deploy_bugs` | Failed-deployment reports: the errors, who reported them, and the fix when resubmitted |
 | `ticket_files` | PDFs attached when closing a VPN access request |
+| `deployment_records` | One confidential deployment record per closed Deployment Request: Manual or CI/CD details, who submitted it and when (admins only) |
 | `notifications` | In-app notifications per user |
 | `audit_log` | Role changes, invited, created and deleted users |
 | `otps` | Pending email verification codes (expire after 10 minutes) |

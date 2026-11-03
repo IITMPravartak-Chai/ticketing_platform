@@ -3,15 +3,21 @@
 # Config (.env or environment): DATABASE_URL, SECRET_KEY, APP_URL, ADMIN_EMAILS, ADMIN_PASSWORD, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM.
 # Admins: every address in ADMIN_EMAILS (or ADMIN_EMAIL) is made an admin on each start; missing accounts are created
 # with ADMIN_PASSWORD (or without a password, to activate with "Create account"). Existing passwords are never reset.
+# Users: every entry in USER_ACCOUNTS (Name|email|password, comma-separated) is created as a User on each start if it is
+# missing. Existing accounts are left as they are, so a password someone has changed is never reset.
 # Roles: user (raises tickets), engineer (works tickets assigned to them), admin (assigns, takes ownership, manages roles).
 # Only a ticket's owner (its assignee) can start, hold, resume and close it. Every action is written to ticket_history.
 # Deployments end as "Successfully Deployed" (closes the ticket) or "Failed / Bug Fix Required": the owner or an admin
 # describes the bugs with screenshots, the ticket waits ON HOLD for the fix, and the requester (or the owner or an admin)
 # resubmits it for redeployment, which sends it back to the owner.
+# Deployment records: closing a Deployment Request as Successfully Deployed needs a deployment details form (Manual or
+# CI/CD: server, IP, app, method, pipeline...). The record and the closure are saved in ONE transaction. Records are
+# confidential: only admins can list or read them (Deployment Details page); requesters only see status, date and app URL.
 # Tools:  python mlops_service_desk.py --test-email you@example.com   |   python mlops_service_desk.py --import-sqlite servicedesk.db
-#         python mlops_service_desk.py --ensure-admins   (repairs admin roles from ADMIN_EMAILS without starting the server)
+#         python mlops_service_desk.py --ensure-admins   (applies ADMIN_EMAILS and USER_ACCOUNTS without starting the server)
 # The React frontend loads React + Babel from cdnjs, so the browser needs internet access.
-import os, re, sys, json, hmac, hashlib, base64, time, smtplib, secrets, logging
+import os, re, sys, io, json, hmac, hashlib, base64, time, smtplib, secrets, logging, zipfile
+from xml.sax.saxutils import escape
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, asynccontextmanager
 from datetime import datetime
@@ -49,7 +55,11 @@ ACTIVE = ["ASSIGNED", "IN PROGRESS", "ON HOLD"]
 TYPES = ["Deployment Request", "Access Request", "Other"]
 PRIOS = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
 ENVS = ["Development", "Staging", "Production"]
-DEPLOY_STATUSES = ["Successfully Deployed"]  # failures go through /fail instead of closing the ticket
+DEPLOY_STATUSES = ["Successfully Deployed"]
+DEP_TYPES = ["Manual", "CI/CD"]
+DEP_ENVS = ["Development", "Testing", "Production"]
+HOST_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.\-:]{0,252})$")  # a host name, IPv4 or IPv6 address
+COMMIT_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")  # failures go through /fail instead of closing the ticket
 ACCESS_TYPES = ["Git Repository", "Model Endpoint", "VPN"]
 ACCESS_LEVELS = ["Read only", "Read & Write", "Admin"]
 ACCESS_STATUSES = ["Access Granted", "Partially Granted", "Rejected"]
@@ -122,6 +132,16 @@ create table if not exists deploy_bugs(  -- a failed deployment's bug report and
 alter table ticket_images add column if not exists bug_id int references deploy_bugs(id) on delete cascade;  -- screenshot of a failed deployment
 create index if not exists ix_deploy_bugs_ticket on deploy_bugs(ticket_id);
 alter table users add column if not exists deleted_at timestamptz;  -- set when an admin deletes an account that still has ticket history
+create table if not exists deployment_records(  -- confidential: read only by admins
+  id serial primary key, ticket_id int not null unique references tickets(id) on delete cascade,
+  deployment_type text not null check (deployment_type in ('Manual','CI/CD')),
+  app_name text not null, app_url text not null, server_name text not null, server_ip text not null,
+  environment text not null, method text not null, deployed_at timestamptz not null, status text not null, version text not null default '',
+  notes text not null default '', manual_steps text not null default '',
+  cicd_tool text not null default '', pipeline_name text not null default '', pipeline_run_id text not null default '',
+  repo_url text not null default '', commit_id text not null default '',
+  deployed_by int not null references users(id), deployed_by_role text not null, submitted_at timestamptz not null default now(),
+  idempotency_key text unique);  -- the form's one-time key: a retried submit cannot create a second record
 create index if not exists ix_tickets_status on tickets(status);
 create index if not exists ix_images_ticket on ticket_images(ticket_id);
 create index if not exists ix_files_ticket on ticket_files(ticket_id);
@@ -161,6 +181,7 @@ def start_db():
     with tx() as c:
         c.execute(SCHEMA)
         admins = ensure_admins(c)
+        ensure_users(c)
     log.info("Connected to PostgreSQL at %s", safe_url(DATABASE_URL))
     return admins
 
@@ -172,6 +193,33 @@ def configured_admin_emails():
         if not EMAIL_RE.match(e): log.error("Ignoring invalid admin email in ADMIN_EMAILS/ADMIN_EMAIL: %r", e)
         elif e not in out: out.append(e)
     return out
+def configured_users():
+    # USER_ACCOUNTS=Name|email|password,Name|email|password  ->  [(name, email, password)]; bad entries are logged and skipped
+    out = []
+    for item in (x.strip() for x in os.environ.get("USER_ACCOUNTS", "").split(",") if x.strip()):
+        parts = [x.strip() for x in item.split("|")]
+        if len(parts) != 3 or not parts[0]:
+            log.error("Ignoring USER_ACCOUNTS entry %r: use Name|email|password", item.split("|")[0]); continue
+        name, email, pw = parts[0], parts[1].lower(), parts[2]
+        if not EMAIL_RE.match(email): log.error("Ignoring USER_ACCOUNTS entry for %r: invalid email", name)
+        elif len(pw) < 8: log.error("Ignoring USER_ACCOUNTS entry for %s: password must be at least 8 characters", email)
+        elif email not in (e for _, e, _ in out): out.append((name, email, pw))
+    return out
+def ensure_users(c):
+    # Runs on every start: creates the USER_ACCOUNTS people who don't have an account yet. Never changes an existing
+    # account (name, role or password); an invited account without a password is activated with the configured one.
+    admins = configured_admin_emails()
+    for name, email, pw in configured_users():
+        if email in admins: continue  # ADMIN_EMAILS wins
+        x = c.execute("select id, pw_hash, deleted_at from users where email=%s for update", (email,)).fetchone()
+        if not x:
+            c.execute("insert into users(name,email,pw_hash,role) values(%s,%s,%s,'user')", (name, email, hash_pw(pw)))
+            audit(c, None, "USER_CREATED", email, f"{name} created from USER_ACCOUNTS")
+            log.info("Created user account %s (%s) from USER_ACCOUNTS", email, name)
+        elif not x["pw_hash"] and not x["deleted_at"]:
+            c.execute("update users set pw_hash=%s, updated_at=now() where id=%s", (hash_pw(pw), x["id"]))
+            audit(c, None, "USER_ACTIVATED", email, "Password set from USER_ACCOUNTS")
+            log.info("Activated invited account %s from USER_ACCOUNTS", email)
 def ensure_admins(c):
     # Runs on every start (and with --ensure-admins). Every configured email ends up as an admin:
     # existing accounts are promoted, missing ones are created. Existing passwords are never changed,
@@ -294,7 +342,8 @@ class RoleIn(BaseModel): role: str
 class CloseIn(BaseModel):
     deploy_status: str; deployed_at: str; notes: str; issues: str = ""; resolution: str; deploy_url: str
     version: str = ""; env: str = "Production"
-    vpn_user: str = ""; vpn_password: str = ""; api_key: str = ""; files: list[dict] = []  # files: PDFs [{name, data: "data:application/pdf;base64,..."}]
+    vpn_user: str = ""; vpn_password: str = ""; api_key: str = ""; files: list[dict] = []
+    deployment: dict = {}; idem: str = ""  # Deployment Request only: the deployment details form + its one-time key  # files: PDFs [{name, data: "data:application/pdf;base64,..."}]
 
 # ---------------- Auth routes ----------------
 @app.post("/api/auth/register")
@@ -491,7 +540,8 @@ def detail(rid: str, u=Depends(user)):
         elif hold_from is not None and h["to_status"] != "ON HOLD": hold += h["at"] - hold_from; hold_from = None
     now = time.time()
     if hold_from is not None: hold += now - hold_from
-    return {**t, "history": hist_rows, "comments": cm, "images": imgs, "files": files, "creds": creds, "bugs": bugs, "ts": ts, "tse": tse, "hold_secs": hold, "now": now,
+    return {**t, "history": hist_rows, "comments": cm, "images": imgs, "files": files, "creds": creds, "bugs": bugs,
+            "deployment": q("select id, deployment_type, app_name, environment from deployment_records where ticket_id=%s", (t["id"],), True) if u["role"] == "admin" else None, "ts": ts, "tse": tse, "hold_secs": hold, "now": now,
             "is_owner": t["assignee_id"] == u["id"]}
 @app.get("/api/requests/{rid}/images/{iid}")
 def image(rid: str, iid: int, u=Depends(user)):
@@ -654,12 +704,48 @@ def hold(rid: str, b: HoldIn, u=Depends(user)):
 def resume(rid: str, u=Depends(user)):
     if get_ticket(rid, u)["fix_open"]: raise HTTPException(400, "This deployment is waiting for a bug fix. Use Resubmit for Redeployment once it is fixed.")
     return _transition(rid, u, ["ON HOLD"], "IN PROGRESS", f"Work resumed by {u['name']}")
+def parse_deployment(d):
+    # Validates the deployment details form; every problem is reported at once
+    g = lambda k, n=200: str(d.get(k) or "").strip()[:n]
+    x = {"deployment_type": g("deployment_type"), "app_name": g("app_name"), "app_url": g("app_url", 500), "server_name": g("server_name"),
+         "server_ip": g("server_ip", 253), "environment": g("environment"), "method": g("method"), "deployed_at": g("deployed_at", 40),
+         "version": g("version", 100), "notes": g("notes", 5000), "manual_steps": g("manual_steps", 5000), "cicd_tool": g("cicd_tool"),
+         "pipeline_name": g("pipeline_name"), "pipeline_run_id": g("pipeline_run_id"), "repo_url": g("repo_url", 500), "commit_id": g("commit_id", 64)}
+    if x["deployment_type"] not in DEP_TYPES: raise HTTPException(400, "Choose the deployment type: Manual or CI/CD")
+    cicd = x["deployment_type"] == "CI/CD"
+    need = [("application name", "app_name"), ("application URL", "app_url"), ("server name", "server_name"), ("server IP / host", "server_ip"),
+            ("environment", "environment"), ("deployment date/time", "deployed_at")]
+    need += [("pipeline name", "pipeline_name"), ("pipeline run ID", "pipeline_run_id")] if cicd else []
+    missing = [n for n, k in need if not x[k]]
+    if missing: raise HTTPException(400, "Please fill in: " + ", ".join(missing))
+    bad = []
+    if not URL_RE.match(x["app_url"]): bad.append("Application URL must start with http:// or https://")
+    if not HOST_RE.match(x["server_ip"]): bad.append("Server IP / host must be an IP address or host name (letters, digits, . - :)")
+    if x["environment"] not in DEP_ENVS: bad.append("Environment must be Development, Testing or Production")
+    if cicd and x["commit_id"] and not COMMIT_RE.match(x["commit_id"]): bad.append("Commit ID must be 7 to 40 hexadecimal characters")
+    try: x["deployed_at"] = datetime.fromisoformat(x["deployed_at"]).astimezone()
+    except ValueError: bad.append("Enter a valid deployment date/time")
+    if bad: raise HTTPException(400, "; ".join(bad))
+    x.update(method="", cicd_tool="", repo_url="")  # no longer asked for
+    if not cicd: x.update(cicd_tool="", pipeline_name="", pipeline_run_id="", repo_url="", commit_id="")  # keep only what fits the type
+    else: x["manual_steps"] = ""
+    return x
+
 @app.post("/api/requests/{rid}/close")
 def close(rid: str, b: CloseIn, u=Depends(user)):
     t = get_ticket(rid, u)
     acc = t["type"] == "Access Request"  # access tickets record the access outcome; the URL is optional
+    dep = None
+    if t["type"] == "Deployment Request":  # needs the deployment details form, filled by an MLOps Engineer or admin
+        if u["role"] not in ("engineer", "admin"): raise HTTPException(403, "Only MLOps Engineers and admins can record a deployment")
+        key = b.idem.strip()[:80]
+        if key and q("select 1 from deployment_records where ticket_id=%s and idempotency_key=%s", (t["id"], key), True):
+            return {"ok": True, "duplicate": True}  # the same form was already saved (a retried submit): nothing new is created
+        if not key: raise HTTPException(400, "Missing submission key; reload the page and try again")
+        dep = parse_deployment(b.deployment)
+        b.deployed_at, b.deploy_url, b.version, b.env, b.notes = dep["deployed_at"].isoformat(), dep["app_url"], dep["version"], dep["environment"], ""
     if b.deploy_status not in (ACCESS_STATUSES if acc else DEPLOY_STATUSES): raise HTTPException(400, "Choose a status")
-    if b.env not in ENVS: raise HTTPException(400, "Choose an environment")
+    if b.env not in (DEP_ENVS if dep else ENVS): raise HTTPException(400, "Choose an environment")
     if t["fix_open"]: raise HTTPException(400, "This deployment is waiting for a bug fix. Resubmit it for redeployment first.")
     missing = [n for n, v in (("date/time", b.deployed_at), *((("access given", b.notes),) if acc else (("deployment URL", b.deploy_url),))) if not v.strip()]
     if missing: raise HTTPException(400, "Please fill in: " + ", ".join(missing))
@@ -683,6 +769,19 @@ def close(rid: str, b: CloseIn, u=Depends(user)):
                   (t["id"], b.deploy_status, deployed, b.notes.strip(), issues, b.resolution.strip(), url, b.version.strip(), b.env, u["id"], vuser, vpw, key))
         for name, data in pdfs:
             c.execute("insert into ticket_files(ticket_id,name,data) values(%s,%s,%s)", (t["id"], name, data))
+        if dep:  # same transaction as the closure: both are saved, or neither
+            try:
+                with c.transaction():
+                    c.execute("""insert into deployment_records(ticket_id,deployment_type,app_name,app_url,server_name,server_ip,environment,method,
+                                   deployed_at,status,version,notes,manual_steps,cicd_tool,pipeline_name,pipeline_run_id,repo_url,commit_id,
+                                   deployed_by,deployed_by_role,idempotency_key)
+                                 values(%(tid)s,%(deployment_type)s,%(app_name)s,%(app_url)s,%(server_name)s,%(server_ip)s,%(environment)s,%(method)s,
+                                   %(deployed_at)s,%(status)s,%(version)s,%(notes)s,%(manual_steps)s,%(cicd_tool)s,%(pipeline_name)s,%(pipeline_run_id)s,
+                                   %(repo_url)s,%(commit_id)s,%(by)s,%(role)s,%(key)s)""",
+                              {**dep, "tid": t["id"], "status": b.deploy_status, "by": u["id"], "role": u["role"], "key": b.idem.strip()[:80]})
+            except psycopg.errors.UniqueViolation:
+                raise HTTPException(409, "A deployment record for this ticket was already submitted")
+            audit(c, u["id"], "DEPLOYMENT_RECORDED", rid, f"{dep['deployment_type']} deployment of {dep['app_name']} to {dep['environment']} recorded by {u['name']} ({u['role']})")
         c.execute("update tickets set status='CLOSED', updated_at=now() where id=%s", (t["id"],))
         hist(c, t["id"], "CLOSED", u["id"], f"Closed by {u['name']} <{u['email']}>. "
              + (f"{b.deploy_status} at {fmt(deployed)}." + (f" {len(pdfs)} PDF(s) attached." if pdfs else "") if acc else f"Deployment {b.deploy_status} at {fmt(deployed)}. URL: {url}"),
@@ -704,6 +803,84 @@ def close(rid: str, b: CloseIn, u=Depends(user)):
     for e in sorted({t["remail"], *admin_emails(), *email_list(t["cc"]), *grantees} - {None, u["email"]}):
         notify(e, t["id"], msg, f"[{rid}] Ticket closed: {t['title']}")
     return {"ok": True}
+
+# ---------------- Deployment records (admin only) ----------------
+DEP_SEL = """select d.*, t.rid, t.title, x.name deployed_by_name, x.email deployed_by_email
+  from deployment_records d join tickets t on t.id=d.ticket_id join users x on x.id=d.deployed_by"""
+@app.get("/api/deployments")
+def deployments(u=Depends(admin)):
+    return [{k: v for k, v in r.items() if k != "idempotency_key"} for r in q(DEP_SEL + " order by d.submitted_at desc, d.id desc")]
+# Excel (.xlsx) download of the records, with the same search and filters as the page. Built with zipfile (no extra
+# package); every cell is an inline string, so nothing in a record can run as an Excel formula.
+XLSX_COLS = [("Ticket ID", "rid", 14), ("Ticket Title", "title", 30), ("Application", "app_name", 24), ("Application URL", "app_url", 36),
+             ("Server Name", "server_name", 20), ("Server IP / Host", "server_ip", 18), ("Deployment Type", "deployment_type", 16),
+             ("Environment", "environment", 14), ("Status", "status", 22), ("Version", "version", 12), ("Deployed At", "deployed_at", 22),
+             ("Deployed By", "deployed_by_name", 22), ("Deployed By Email", "deployed_by_email", 30), ("Role", "deployed_by_role", 16),
+             ("Pipeline Name", "pipeline_name", 20), ("Pipeline Run ID", "pipeline_run_id", 18), ("Commit ID", "commit_id", 14),
+             ("Deployment Method", "method", 18), ("CI/CD Tool", "cicd_tool", 16), ("Repository", "repo_url", 36),
+             ("Notes", "notes", 50), ("Submitted At", "submitted_at", 22)]
+BAD_XML = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+def _col(i):
+    n = ""
+    while i: i, r = divmod(i - 1, 26); n = chr(65 + r) + n
+    return n
+def xlsx(sheet, cols, rows):
+    def cell(ref, v, style=0):
+        v = escape(BAD_XML.sub("", str(v if v is not None else "")))[:32000]
+        st = ' s="%d"' % style if style else ""
+        return '<c r="%s" t="inlineStr"%s><is><t xml:space="preserve">%s</t></is></c>' % (ref, st, v)
+    data = ['<row r="1">%s</row>' % "".join(cell("%s1" % _col(j), h, 1) for j, (h, _, _) in enumerate(cols, 1))]
+    data += ['<row r="%d">%s</row>' % (i, "".join(cell("%s%d" % (_col(j), i), r.get(k)) for j, (_, k, _) in enumerate(cols, 1))) for i, r in enumerate(rows, 2)]
+    last = f"{_col(len(cols))}{len(rows) + 1}"
+    ws = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+          '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>'
+          + "<cols>" + "".join('<col min="%d" max="%d" width="%d" customWidth="1"/>' % (j, j, w) for j, (_, _, w) in enumerate(cols, 1)) + "</cols>"
+          + '<sheetData>%s</sheetData><autoFilter ref="A1:%s"/></worksheet>' % ("".join(data), last))
+    files = {
+        "[Content_Types].xml": '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+            '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>',
+        "_rels/.rels": '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',
+        "xl/workbook.xml": '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            f'<sheets><sheet name="{escape(sheet)}" sheetId="1" r:id="rId1"/></sheets>'
+            f'<definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="0" hidden="1">\'{escape(sheet)}\'!$A$1:${_col(len(cols))}${len(rows) + 1}</definedName></definedNames></workbook>',
+        "xl/_rels/workbook.xml.rels": '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+            '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>',
+        "xl/styles.xml": '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font></fonts>'
+            '<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>'
+            '<fill><patternFill patternType="solid"><fgColor rgb="FF4F46E5"/><bgColor indexed="64"/></patternFill></fill></fills>'
+            '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+            '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+            '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+            '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs></styleSheet>',
+        "xl/worksheets/sheet1.xml": ws}
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, body in files.items(): z.writestr(name, body)
+    return buf.getvalue()
+@app.get("/api/deployments/export")
+def deployments_export(q_: str = "", type: str = "ALL", env: str = "ALL", u=Depends(admin)):
+    qq = q_.strip().lower()[:200]
+    rows = [r for r in q(DEP_SEL + " order by d.submitted_at desc, d.id desc")
+            if (type == "ALL" or r["deployment_type"] == type) and (env == "ALL" or r["environment"] == env)
+            and (not qq or qq in " ".join(str(r[k] or "") for k in ("rid", "app_name", "server_name", "server_ip", "deployed_by_name", "app_url", "title")).lower())]
+    with tx() as c:  # who downloaded confidential data, and how much
+        audit(c, u["id"], "DEPLOYMENTS_EXPORTED", "deployment_records", f"{u['name']} downloaded {len(rows)} deployment record(s) as Excel")
+    name = f"deployment_details_{datetime.now().strftime('%Y-%m-%d_%H%M')}.xlsx"
+    return {"name": name, "count": len(rows), "src": "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,"
+            + base64.b64encode(xlsx("Deployment Details", XLSX_COLS, rows)).decode()}
+@app.get("/api/deployments/{did}")
+def deployment(did: int, u=Depends(admin)):
+    d = q(DEP_SEL + " where d.id=%s", (did,), True)
+    if not d: raise HTTPException(404, "Deployment record not found")
+    d.pop("idempotency_key", None)
+    return d
 
 # ---------------- Failed deployments: bug report, fix, resubmit ----------------
 @app.post("/api/requests/{rid}/fail")
@@ -827,7 +1004,7 @@ try{var t=localStorage.getItem('theme')||'light';document.documentElement.datase
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
 <style>
-:root{--p:#4f46e5;--p2:#4338ca;--bg:#f1f5f9;--card:#fff;--tx:#0f172a;--mu:#64748b;--bd:#e2e8f0}
+:root{color-scheme:light;--p:#4f46e5;--p2:#4338ca;--bg:#f1f5f9;--card:#fff;--tx:#0f172a;--mu:#64748b;--bd:#e2e8f0}
 *{box-sizing:border-box}
 body{margin:0;font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--tx);font-size:14.5px}
 a.l{color:var(--p);cursor:pointer;font-weight:600;text-decoration:none;word-break:break-all}a.l:hover{text-decoration:underline}
@@ -934,7 +1111,14 @@ td{padding:13px 12px;border-bottom:1px solid #f1f5f9;text-align:left;vertical-al
 .update button{border:0;border-radius:8px;background:#6366f1;color:#fff;font:inherit;font-weight:600;padding:6px 14px;cursor:pointer}
 .nt{display:flex;gap:14px;padding:14px;border-radius:12px;background:#f8fafc;margin-bottom:10px;border:1px solid #eef2f7}
 .nt .ic{width:38px;height:38px;border-radius:50%;background:#eef2ff;color:var(--p);display:grid;place-items:center;flex:none}
-.b.BUGFIX{background:#fee2e2;color:#991b1b}
+.b.BUGFIX{background:#fee2e2;color:#991b1b}.b.CICD{background:#ede9fe;color:#5b21b6}.b.MANUAL{background:#e0f2fe;color:#075985}
+.dtype{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:4px 0 18px}.dtype button{display:flex;gap:12px;align-items:flex-start;text-align:left;padding:14px;border:1.5px solid var(--bd);border-radius:12px;background:var(--card);color:var(--tx);cursor:pointer;font:inherit}
+.dtype button b{display:block;margin-bottom:2px}.dtype button small{color:var(--mu)}.dtype button.on{border-color:var(--p);background:#4f46e50f;box-shadow:0 0 0 3px #4f46e51f}
+.depform h4{margin:18px 0 10px;padding-top:14px;border-top:1px solid var(--bd)}.conf{background:#fffbeb;border:1px solid #fde68a;color:#92400e;border-radius:10px;padding:10px 12px;margin:0 0 16px;font-size:13.5px}
+.dephead{display:flex;gap:12px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;margin-bottom:6px}.dephead .sub{margin:0;flex:1;min-width:240px}.dephead .btn{flex:none}
+.filters{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px}.filters input,.filters select{margin:0;width:auto;min-width:160px}.filters input{flex:1}
+tr.click{cursor:pointer}tr.click:hover td{background:#4f46e50a}
+.modal .mbox{background:var(--card);border-radius:16px;padding:22px;width:100%;max-width:760px;max-height:calc(100vh - 32px);overflow:auto;box-shadow:0 20px 50px #0004}.mbox h4{margin:18px 0 6px}
 .modal{position:fixed;inset:0;z-index:90;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;padding:16px}
 .modal form{background:var(--card);border-radius:16px;padding:22px;width:100%;max-width:560px;max-height:calc(100vh - 32px);overflow:auto;box-shadow:0 20px 50px #0004}
 .bugrep{border:1px solid #fecaca;background:#fef2f2;border-radius:12px;padding:12px 14px;margin-top:12px}.bugrep.fixed{border-color:var(--bd);background:transparent}
@@ -967,6 +1151,7 @@ html[data-theme="dark"] .bugrep{background:#2a1215;border-color:#7f1d1d}html[dat
 .seg3 button:focus-visible,.nl:focus-visible{outline:2px solid var(--p);outline-offset:2px}
 /* ---------- dark theme (Settings > Appearance; the choice is stored per browser) ---------- */
 html[data-theme="dark"] .pfbtn:hover,html[data-theme="dark"] .pfbtn[aria-expanded="true"]{background:#ffffff12}html[data-theme="dark"] .mi.lo:hover{background:#3a1215}
+html[data-theme="dark"] .b.CICD{background:#2e1065;color:#c4b5fd}html[data-theme="dark"] .b.MANUAL{background:#0c4a6e80;color:#7dd3fc}html[data-theme="dark"] .conf{background:#2e2108;border-color:#78350f;color:#fcd34d}
 html[data-theme="dark"]{color-scheme:dark;--p:#6366f1;--p2:#818cf8;--bg:#0b1020;--card:#141a2c;--tx:#e2e8f0;--mu:#94a3b8;--bd:#263049}
 html[data-theme="dark"] a.l{color:#a5b4fc}
 html[data-theme="dark"] .top{background:#0e1424e6}
@@ -1036,7 +1221,7 @@ bell:'M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0',out:
 queue:'M22 12h-6l-2 3h-4l-2-3H2M5.5 5.1L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.7 4H7.3a2 2 0 0 0-1.8 1.1z',
 user:'M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z',
 users:'M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75',
-pause:'M6 4h4v16H6zM14 4h4v16h-4z',file:'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6',
+pause:'M6 4h4v16H6zM14 4h4v16h-4z',server:'M3 4h18v6H3zM3 14h18v6H3zM7 7h.01M7 17h.01',git:'M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a9 9 0 0 1-9 9',file:'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6',download:'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3',
 vol:'M11 5L6 9H2v6h4l5 4V5zM15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14',mute:'M11 5L6 9H2v6h4l5 4V5zM23 9l-6 6M17 9l6 6',
 eye:'M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
 eyeOff:'M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24M1 1l22 22',
@@ -1418,7 +1603,95 @@ function FailModal({act,flash,close}){
     <div className="actions"><button className="btn" style={{background:'#dc2626'}} disabled={busy}><Ic n="send" s={16}/> Submit Bug Report</button>
       <button type="button" className="btn ghost" onClick={()=>close()}>Cancel</button></div></form></div>;
 }
-function CloseForm({env,acc,act,cancel,flash}){
+const DEP_ENVS=['Development','Testing','Production'];
+const depBadge=t=><Badge v={t==='CI/CD'?'CICD':'MANUAL'} t={t}/>;
+// Closing a Deployment Request: the deployment details form (Manual or CI/CD). Confidential: only admins can read it later.
+function DeployForm({r,me,act,cancel,flash}){
+  const key=useRef(`${r.rid}-${Date.now()}-${Math.random().toString(36).slice(2)}`);  // same key on a retry, so no duplicate record
+  const [fail,setFail]=useState(false),[busy,setBusy]=useState(false);
+  const [d,setD]=useState({deployment_type:'Manual',app_name:'',app_url:'',server_name:'',server_ip:'',environment:r.env==='Staging'?'Testing':DEP_ENVS.includes(r.env)?r.env:'Production',
+    deployed_at:nowLocal(),version:'',notes:'',manual_steps:'',pipeline_name:'',pipeline_run_id:'',commit_id:''});
+  const u=k=>e=>setD({...d,[k]:e.target.value}),cicd=d.deployment_type==='CI/CD';
+  const submit=async e=>{e.preventDefault();setBusy(true);
+    await act('/close',{deploy_status:DEPLOY[0],deployed_at:d.deployed_at,deploy_url:d.app_url,version:d.version,env:'Production',notes:'',resolution:'',deployment:{...d,manual_steps:''},idem:key.current},
+      x=>x.duplicate?'These deployment details were already saved. The ticket is closed.':'Deployment details saved. The ticket is closed and the requester has been notified.');setBusy(false)};
+  const Type=({v,ic,title,sub})=><button type="button" className={d.deployment_type===v?'on':''} aria-pressed={d.deployment_type===v} onClick={()=>setD({...d,deployment_type:v})}>
+    <Ic n={ic} s={22}/><span><b>{title}</b><small>{sub}</small></span></button>;
+  return <><form className="depform" onSubmit={submit} style={{marginTop:16}}><h3>Deployment Details</h3>
+    <p className="sub">Needed to close this ticket. Fields marked * are required.</p>
+    <div className="conf"><b>Confidential.</b> Only admins can see these details. The requester only gets the status, date and application URL.</div>
+    <div className="row2"><label>Deployment Status *<select value={DEPLOY[0]} onChange={e=>{if(e.target.value===FAILED)setFail(true)}}>{DEPLOY.map(t=><option key={t}>{t}</option>)}</select></label>
+      <F l="Ticket ID" value={r.rid} readOnly/></div>
+    <label style={{marginBottom:6}}>Deployment Type *</label>
+    <div className="dtype"><Type v="Manual" ic="server" title="Manual Deployment" sub="Deployed by hand on the server"/><Type v="CI/CD" ic="git" title="CI/CD (Automated) Deployment" sub="Deployed by a pipeline"/></div>
+    <h4>Application and server</h4>
+    <div className="row2"><F l="Application Name *" required maxLength="200" value={d.app_name} onChange={u('app_name')} placeholder="fraud-model-service"/>
+      <F l="Application URL *" type="url" required value={d.app_url} onChange={u('app_url')} placeholder="https://fraud.example.com"/></div>
+    <div className="row2"><F l="Server Name *" required maxLength="200" value={d.server_name} onChange={u('server_name')} placeholder="ml-prod-01"/>
+      <F l="Server IP Address / Host *" required maxLength="253" pattern="[A-Za-z0-9][A-Za-z0-9.:\-]*" title="An IP address or host name" value={d.server_ip} onChange={u('server_ip')} placeholder="10.10.5.21"/></div>
+    <div className="row2"><label>Deployment Environment *<select value={d.environment} onChange={u('environment')}>{DEP_ENVS.map(t=><option key={t}>{t}</option>)}</select></label>
+      <F l="Deployment Date and Time *" type="datetime-local" required value={d.deployed_at} onChange={u('deployed_at')}/></div>
+    <F l="Version" maxLength="100" value={d.version} onChange={u('version')} placeholder="v2.4.1"/>
+    {cicd?<><h4>CI/CD pipeline</h4>
+      <div className="row2"><F l="Pipeline Name *" required maxLength="200" value={d.pipeline_name} onChange={u('pipeline_name')} placeholder="deploy-prod"/>
+        <F l="Pipeline Run ID *" required maxLength="200" value={d.pipeline_run_id} onChange={u('pipeline_run_id')} placeholder="9876543210"/></div>
+      <F l="Commit ID" pattern="[0-9a-fA-F]{7,40}" title="7 to 40 hexadecimal characters" value={d.commit_id} onChange={u('commit_id')} placeholder="3f2a9c1"/></>
+    :null}
+    <label>Deployment Notes / Description<textarea rows="2" maxLength="5000" value={d.notes} onChange={u('notes')} placeholder="Anything worth knowing later"/></label>
+    <F l="Deployed By" value={`${me.name} (${ROLE_NAME[me.role]})`} readOnly/>
+    <div className="actions"><button className="btn g" disabled={busy}><Ic n="check" s={16}/> Submit Deployment Details &amp; Close Ticket</button><button type="button" className="btn ghost" onClick={cancel}>Cancel</button></div></form>
+    {fail&&<FailModal act={act} flash={flash} close={done=>{setFail(false);if(done)cancel()}}/>}</>;
+}
+// Full deployment record (admins only; the API refuses everyone else)
+function DeploymentModal({id,close,go}){
+  const [d,setD]=useState(null),[err,setErr]=useState('');
+  useEffect(()=>{api('/deployments/'+id).then(setD).catch(e=>setErr(e.message))},[id]);
+  useEffect(()=>{const k=e=>{if(e.key==='Escape')close()};addEventListener('keydown',k);return()=>removeEventListener('keydown',k)},[]);
+  return <div className="modal" onClick={e=>{if(e.target===e.currentTarget)close()}}><div className="mbox" role="dialog" aria-label="Deployment record">
+    {!d?<p>{err||'Loading…'}</p>:<>
+    <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}><h3 style={{margin:0}}>Deployment of {d.app_name}</h3>{depBadge(d.deployment_type)}<Badge v="CLOSED" t={d.status}/></div>
+    <p className="sub" style={{marginTop:6}}>Ticket <a className="l" onClick={()=>{close();go('detail',d.rid)}}>{d.rid}</a> · {d.title}</p>
+    <h4>Application and server</h4><table className="kv"><tbody>
+      <Row k="Application Name">{d.app_name}</Row><Row k="Application URL"><Url u={d.app_url}/></Row><Row k="Server Name">{d.server_name}</Row>
+      <Row k="Server IP / Host"><code>{d.server_ip}</code></Row><Row k="Environment">{d.environment}</Row>{d.method?<Row k="Deployment Method">{d.method}</Row>:null}
+      <Row k="Deployed At">{d.deployed_at}</Row><Row k="Version">{d.version||'-'}</Row></tbody></table>
+    {d.deployment_type==='CI/CD'?<><h4>CI/CD pipeline</h4><table className="kv"><tbody>
+      {d.cicd_tool?<Row k="CI/CD Tool">{d.cicd_tool}</Row>:null}<Row k="Pipeline Name">{d.pipeline_name}</Row><Row k="Pipeline Run ID"><code>{d.pipeline_run_id}</code></Row>
+      {d.repo_url?<Row k="Repository"><Url u={d.repo_url}/></Row>:null}<Row k="Commit ID">{d.commit_id?<code>{d.commit_id}</code>:'-'}</Row></tbody></table></>
+    :d.manual_steps?<><h4>Manual deployment</h4><table className="kv"><tbody><Row k="Steps Performed"><div style={{whiteSpace:'pre-wrap'}}>{d.manual_steps}</div></Row></tbody></table></>:null}
+    <h4>Notes and audit</h4><table className="kv"><tbody>
+      <Row k="Notes"><div style={{whiteSpace:'pre-wrap'}}>{d.notes||'-'}</div></Row>
+      <Row k="Deployed By">{`${d.deployed_by_name} <${d.deployed_by_email}>`} · {ROLE_NAME[d.deployed_by_role]||d.deployed_by_role}</Row>
+      <Row k="Submitted At">{d.submitted_at}</Row></tbody></table></>}
+    <div className="actions" style={{marginTop:16}}><button className="btn ghost" onClick={close}>Close</button></div></div></div>;
+}
+function Deployments({go}){
+  const [rows,setRows]=useState(null),[f,setF]=useState({q:'',type:'ALL',env:'ALL'}),[sel,setSel]=useState(null),[err,setErr]=useState('');
+  useLive(()=>api('/deployments').then(setRows).catch(e=>setErr(e.message)));
+  const [dl,setDl]=useState(false);
+  if(!rows)return <div className="card">{err||'Loading…'}</div>;
+  const qq=f.q.trim().toLowerCase(),u=k=>e=>setF({...f,[k]:e.target.value});
+  const excel=async()=>{setDl(true);try{const d=await api(`/deployments/export?q_=${encodeURIComponent(f.q)}&type=${encodeURIComponent(f.type)}&env=${encodeURIComponent(f.env)}`);
+    const b=await (await fetch(d.src)).blob(),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=d.name;document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),5000)}catch(e){alert(e.message)}setDl(false)};
+  const shown=rows.filter(x=>(f.type==='ALL'||x.deployment_type===f.type)&&(f.env==='ALL'||x.environment===f.env)
+    &&(!qq||[x.rid,x.app_name,x.server_name,x.server_ip,x.deployed_by_name,x.app_url,x.title].join(' ').toLowerCase().includes(qq)));
+  return <div className="card"><div className="dephead"><p className="sub">Every deployment recorded when a Deployment Request was closed. <b>Confidential: admins only.</b> Click a row to see the full record.</p>
+    <button className="btn g" onClick={excel} disabled={dl||!shown.length} title={shown.length?`Download the ${shown.length} record(s) shown as an Excel file`:'Nothing to download'}><Ic n="download" s={16}/> {dl?'Preparing…':'Download Excel'}</button></div>
+    <div className="filters"><input type="search" placeholder="Search ticket, application, server, IP or person" value={f.q} onChange={u('q')} aria-label="Search deployments"/>
+      <select value={f.type} onChange={u('type')} aria-label="Deployment type"><option value="ALL">All types</option><option>Manual</option><option>CI/CD</option></select>
+      <select value={f.env} onChange={u('env')} aria-label="Environment"><option value="ALL">All environments</option>{DEP_ENVS.map(t=><option key={t}>{t}</option>)}</select>
+      <span className="ssub">{shown.length} of {rows.length}</span></div>
+    <div className="tw"><table><thead><tr><th>Ticket ID</th><th>Application</th><th>Server</th><th>Type</th><th>Environment</th><th>Status</th><th>Deployed At</th><th>Deployed By</th><th>Application URL</th></tr></thead><tbody>
+    {shown.map(x=><tr key={x.id} className="click" onClick={()=>setSel(x.id)} title="Open the full record">
+      <td style={{whiteSpace:'nowrap'}}><a className="l" onClick={e=>{e.stopPropagation();go('detail',x.rid)}}>{x.rid}</a></td><td>{x.app_name}</td>
+      <td>{x.server_name}<div className="ssub"><code>{x.server_ip}</code></div></td><td>{depBadge(x.deployment_type)}</td><td>{x.environment}</td>
+      <td><Badge v="CLOSED" t={x.status}/></td><td style={{whiteSpace:'nowrap'}}>{x.deployed_at}</td><td>{x.deployed_by_name}<div className="ssub">{ROLE_NAME[x.deployed_by_role]||x.deployed_by_role}</div></td>
+      <td onClick={e=>e.stopPropagation()}><Url u={x.app_url}/></td></tr>)}
+    {!shown.length&&<tr><td colSpan="9" className="empty">{rows.length?'No deployments match these filters.':'No deployments recorded yet. They appear here when a Deployment Request is closed.'}</td></tr>}</tbody></table></div>
+    {sel&&<DeploymentModal id={sel} close={()=>setSel(null)} go={go}/>}</div>;
+}
+function CloseForm({env,acc,act,cancel,flash,r,me}){
   const [fail,setFail]=useState(false);
   const [c,setC]=useState({deploy_status:(acc?ACCESS_STAT:DEPLOY)[0],deployed_at:nowLocal(),notes:'',issues:'',resolution:'',deploy_url:'',version:'',env,vpn_user:'',vpn_password:'',api_key:'',files:[]});
   const [busy,setBusy]=useState(false);
@@ -1442,6 +1715,7 @@ function CloseForm({env,acc,act,cancel,flash}){
     {c.files.length>0&&<ul className="pdfs">{c.files.map((x,i)=><li key={i}><Ic n="file" s={15}/>{x.name}
       <button type="button" className="btn ghost sm" onClick={()=>setC({...c,files:c.files.filter((_,j)=>j!==i)})}>Remove</button></li>)}</ul>}</>}
     <div className="actions"><button className="btn g" disabled={busy}><Ic n="check" s={16}/> Close Ticket</button><button type="button" className="btn ghost" onClick={cancel}>Cancel</button></div></form>;
+  if(r&&r.type==='Deployment Request')return <DeployForm r={r} me={me} act={act} cancel={cancel} flash={flash}/>;
   return <><form onSubmit={submit} style={{marginTop:16}}><h3>Deployment Result</h3><p className="sub">Fields marked * are required.</p>
     <div className="row2"><label>Deployment Status *<select value={DEPLOY[0]} onChange={e=>{if(e.target.value===FAILED)setFail(true)}}>{DEPLOY.map(t=><option key={t}>{t}</option>)}</select></label>
     <F l="Deployment Date / Time *" type="datetime-local" required value={c.deployed_at} onChange={u('deployed_at')}/></div>
@@ -1452,7 +1726,7 @@ function CloseForm({env,acc,act,cancel,flash}){
     <div className="actions"><button className="btn g" disabled={busy}><Ic n="check" s={16}/> Mark as Deployed &amp; Close</button><button type="button" className="btn ghost" onClick={cancel}>Cancel</button></div></form>
     {fail&&<FailModal act={act} flash={flash} close={done=>{setFail(false);if(done)cancel()}}/>}</>;
 }
-function OwnerPanel({r,act,flash}){
+function OwnerPanel({r,act,flash,me}){
   const [mode,setMode]=useState(null),[reason,setReason]=useState('');
   const hold=async e=>{e.preventDefault();if(await act('/hold',{reason},'Ticket put ON HOLD')){setMode(null);setReason('')}};
   if(r.fix_open)return <div className="section"><h3>Work on this Ticket</h3><div className="note warn" style={{marginTop:0}}>This deployment is waiting for a bug fix.
@@ -1466,7 +1740,7 @@ function OwnerPanel({r,act,flash}){
     {mode==='hold'&&<form onSubmit={hold} style={{marginTop:16,maxWidth:560}}>
       <label>Reason for hold *<textarea rows="2" required value={reason} onChange={e=>setReason(e.target.value)} placeholder="Waiting for credentials from the requester"/></label>
       <div className="actions"><button className="btn">Put On Hold</button><button type="button" className="btn ghost" onClick={()=>setMode(null)}>Cancel</button></div></form>}
-    {mode==='close'&&<CloseForm env={r.env} acc={r.access} act={act} flash={flash} cancel={()=>setMode(null)}/>}</div>;
+    {mode==='close'&&<CloseForm env={r.env} acc={r.access} act={act} flash={flash} r={r} me={me} cancel={()=>setMode(null)}/>}</div>;
 }
 function Secret({v,show}){
   const [see,setSee]=useState(!!show),[ok,setOk]=useState(false);
@@ -1540,7 +1814,12 @@ function AdminFail({act,flash}){
   return <div style={{marginTop:18}}><button className="btn ghost" onClick={()=>setOpen(true)}><Ic n="send" s={16}/> Mark Failed / Bug Fix Required</button>
     {open&&<FailModal act={act} flash={flash} close={()=>setOpen(false)}/>}</div>;
 }
-function Detail({id,me,flash,refresh}){
+function DepPointer({r,go}){
+  const [open,setOpen]=useState(false);
+  return <div className="ownbox" style={{marginTop:16}}><div><b>Deployment record (admins only)</b><div style={{color:'var(--mu)'}}>{r.deployment.deployment_type} deployment of {r.deployment.app_name} to {r.deployment.environment}</div></div>
+    <button className="btn" onClick={()=>setOpen(true)}><Ic n="server" s={16}/> View Deployment Details</button>{open&&<DeploymentModal id={r.deployment.id} close={()=>setOpen(false)} go={go}/>}</div>;
+}
+function Detail({id,me,flash,refresh,go}){
   const [r,setR]=useState(null),[tab,setTab]=useState('details'),[body,setBody]=useState(''),[tip,setTip]=useState(null);
   const isA=me.role==='admin';
   const load=useCallback(()=>api('/requests/'+id).then(setR).catch(e=>flash(e.message)),[id]);
@@ -1566,9 +1845,10 @@ function Detail({id,me,flash,refresh}){
       <Row k="Created">{r.created_at}</Row><Row k="Last Updated">{r.updated_at}</Row><Row k="Description">{r.description}</Row>
       {r.images.length>0&&<Row k="Screenshots"><Shots rid={r.rid} images={r.images}/></Row>}</tbody></table>
       {r.status==='CLOSED'&&<Closure r={r}/>}
+      {r.deployment&&<DepPointer r={r} go={go}/>}
       {r.bugs.length>0&&<BugReports r={r}/>}
       {r.fix_open&&(isA||r.is_owner||me.id===r.requester_id)&&<Resubmit key={r.bugs.length} r={r} act={act}/>}
-      {r.is_owner&&active&&<OwnerPanel r={r} act={act} flash={flash}/>}
+      {r.is_owner&&active&&<OwnerPanel r={r} act={act} flash={flash} me={me}/>}
       {!r.is_owner&&active&&<div className="note"><b>{r.aname}</b> owns this ticket and is responsible for resolving and closing it.{isA?' Use Take Ownership below to work on it yourself.':''}</div>}
       {isA&&r.status!=='CLOSED'&&<div className="section"><AdminPanel key={r.assignee_id||0} r={r} act={act}/>
         {!r.access&&!r.fix_open&&!r.is_owner&&r.assignee_id&&<AdminFail act={act} flash={flash}/>}</div>}</div>}
@@ -1605,10 +1885,10 @@ function Shell({me,page,go,logout,children}){
     ...(isA?[['queue','queue','All Tickets'],['assigned','user','My Owned Tickets'],['users','users','Users & Roles']]
     :me.role==='engineer'?[['assigned','user','Assigned to Me'],['raise','plus','Raise Request'],['my','list','My Requests']]
     :[['raise','plus','Raise Request'],['my','list','My Requests']]),
-    ['notifs','bell','Notifications']];
+    ['notifs','bell','Notifications'],...(isA?[['deployments','server','Deployment Details']]:[])];
   const home=isA?'queue':me.role==='engineer'?'assigned':'my';
   const active=(page.n==='detail'||page.n==='submitted')?home:page.n;
-  const titles={dashboard:isA?'Admin Dashboard':'Dashboard',raise:'Raise Request',my:'My Requests',assigned:isA?'My Owned Tickets':'Assigned to Me',queue:'All Tickets',users:'Users & Roles',notifs:'Notifications',settings:'Settings',account:'My Account',detail:'Ticket '+(page.a||''),submitted:'Request Submitted'};
+  const titles={dashboard:isA?'Admin Dashboard':'Dashboard',raise:'Raise Request',my:'My Requests',assigned:isA?'My Owned Tickets':'Assigned to Me',queue:'All Tickets',users:'Users & Roles',notifs:'Notifications',settings:'Settings',account:'My Account',deployments:'Deployment Details',detail:'Ticket '+(page.a||''),submitted:'Request Submitted'};
   const ini=me.name.split(' ').map(x=>x[0]).join('').slice(0,2).toUpperCase();
   const nav2=k=>{setOpen(false);setPm(false);go(k)};
   return <div className="app"><div className={'shade '+(open?'on':'')} onClick={()=>setOpen(false)}/>
@@ -1674,7 +1954,8 @@ function App(){
     else if(n==='notifs')c=<Notifications go={go} refresh={loadMe}/>;
     else if(n==='settings')c=<Settings flash={flash}/>;
     else if(n==='account')c=<Account go={go} flash={flash}/>;
-    else if(n==='detail')c=<Detail key={page.a} id={page.a} me={me} flash={flash} refresh={loadMe}/>;
+    else if(n==='deployments'&&isA)c=<Deployments go={go}/>;
+    else if(n==='detail')c=<Detail key={page.a} id={page.a} me={me} flash={flash} refresh={loadMe} go={go}/>;
     else c=dash;
     body=<Shell me={me} page={page} go={go} logout={logout}>{c}</Shell>;
   }
