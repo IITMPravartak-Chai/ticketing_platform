@@ -5,12 +5,12 @@ A ticketing platform for MLOps requests: deployments, access requests and genera
 | | |
 |---|---|
 | **Backend** | Python 3.12, FastAPI, served by Uvicorn |
-| **Frontend** | React 18 single-page app, served by the backend (no build step) |
+| **Frontend** | React 18 single-page app built with Vite; the backend serves the built files |
 | **Database** | PostgreSQL 16 in Docker |
 | **Email** | Any SMTP server (we use Microsoft 365 / Outlook) |
 | **Packaging** | Docker: one `docker compose up -d --build` starts the app and the database |
 
-The whole application (API, database access and web UI) is one file, `mlops_service_desk.py`. Tables are created automatically on startup.
+The code is split into a **backend** (`backend/`, the REST API) and a **frontend** (`frontend/`, the React web UI). In production the backend serves the built frontend from the same address and port, so the browser only ever talks to one server. Tables are created automatically on startup.
 
 **Quick start (Docker):**
 
@@ -29,19 +29,20 @@ Then open `http://<server-ip>:8000`. The full steps are in [Deployment with Dock
 
 1. [Project structure](#project-structure)
 2. [How it fits together](#how-it-fits-together)
-3. [Server requirements](#server-requirements)
-4. [Deployment with Docker (recommended)](#deployment-with-docker-recommended)
-5. [Deployment without Docker](#deployment-without-docker)
-6. [Configuration reference (.env)](#configuration-reference-env)
-7. [Admin accounts](#admin-accounts)
-8. [Run it as a service (without Docker)](#run-it-as-a-service-without-docker)
-9. [Updating, and rolling back](#updating-and-rolling-back)
-10. [Backup and restore](#backup-and-restore)
-11. [Logs](#logs)
-12. [Security checklist](#security-checklist)
-13. [Troubleshooting](#troubleshooting)
-14. [Features](#features)
-15. [Database tables](#database-tables)
+3. [Local development](#local-development)
+4. [Server requirements](#server-requirements)
+5. [Deployment with Docker (recommended)](#deployment-with-docker-recommended)
+6. [Deployment without Docker](#deployment-without-docker)
+7. [Configuration reference (.env)](#configuration-reference-env)
+8. [Admin accounts](#admin-accounts)
+9. [Run it as a service (without Docker)](#run-it-as-a-service-without-docker)
+10. [Updating, and rolling back](#updating-and-rolling-back)
+11. [Backup and restore](#backup-and-restore)
+12. [Logs](#logs)
+13. [Security checklist](#security-checklist)
+14. [Troubleshooting](#troubleshooting)
+15. [Features](#features)
+16. [Database tables](#database-tables)
 
 ---
 
@@ -49,30 +50,60 @@ Then open `http://<server-ip>:8000`. The full steps are in [Deployment with Dock
 
 ```
 ticketing_platform/
-├── mlops_service_desk.py   # The application: REST API, database access, emails and the React UI (one file)
-├── Dockerfile              # Builds the app image (Python 3.12, runs as a non-root user, health check)
-├── .dockerignore           # Keeps .env, backups and dumps out of the image
-├── docker-compose.yml      # Runs the app (servicedesk-app) and PostgreSQL 16 (servicedesk-postgres) together
-├── requirements.txt        # Python packages, pinned versions
-├── .env.example            # Template for .env: copy it and fill in real values
-├── .env                    # Real settings and passwords. NOT in Git; created on each server
-├── .gitignore              # Keeps .env, databases, dumps, backups and caches out of Git
-└── README.md               # This file
+├── backend/                    # Python REST API (FastAPI + PostgreSQL)
+│   ├── requirements.txt        # Python packages, pinned versions
+│   └── app/
+│       ├── __main__.py         # `python -m app`: starts the server, or runs --test-email / --ensure-admins / --import-sqlite
+│       ├── main.py             # The FastAPI app: startup, database error handlers, routers, built frontend
+│       ├── config.py           # Reads .env; ticket types, statuses, validation rules, deployment hours
+│       ├── db.py               # Connection pool and the SCHEMA (tables created or upgraded on every start)
+│       ├── bootstrap.py        # Startup: connect, apply the schema, create ADMIN_EMAILS / USER_ACCOUNTS
+│       ├── security.py         # Password hashing, signed login tokens, role checks
+│       ├── mailer.py           # Emails (sent in the background), in-app notifications, email codes
+│       ├── schemas.py          # Request bodies the API accepts
+│       ├── utils.py            # Deployment window, email parsing, date formatting
+│       ├── frontend.py         # Serves frontend/dist at / and /logo.png; the build id for the reload banner
+│       ├── services/
+│       │   ├── tickets.py      # Ticket queries, access rules, history, upload and form validation
+│       │   └── xlsx.py         # Excel export of deployment records
+│       └── routers/            # One file per API area, all under /api
+│           ├── auth.py         # Sign-up with emailed code, login, forgot / change password
+│           ├── account.py      # /api/me and My Account
+│           ├── dashboard.py    # Dashboard numbers per role
+│           ├── tickets.py      # Lists, details, attachments; create, comment, assign, start, hold, close, fail, resubmit
+│           ├── deployments.py  # Deployment records and Excel download (admins only)
+│           ├── users.py        # Users & roles (admins only)
+│           └── notifications.py
+├── frontend/                   # React web UI (Vite)
+│   ├── package.json            # npm scripts (dev, build, lint) and pinned packages; package-lock.json locks them
+│   ├── vite.config.js          # Build settings; the dev server forwards /api to the backend
+│   ├── eslint.config.js        # `npm run lint` catches missing or unused imports
+│   ├── index.html              # Page shell: theme applied before first paint, build id placeholder
+│   ├── public/logo.png         # Logo, served at /logo.png
+│   └── src/
+│       ├── main.jsx            # Mounts the app
+│       ├── App.jsx             # Sign-in state, page routing, ticket links from emails (/#/t/MLOPS-0001)
+│       ├── styles.css          # All styles, light and dark theme
+│       ├── layout/Shell.jsx    # Sidebar, top bar, profile menu
+│       ├── pages/              # Auth, Dashboards, Raise, TicketList, Users, Account, Settings, Notifications, Deployments
+│       │   └── ticket/         # Ticket page: Detail, admin actions, owner actions, fail pop-up, closure and bug parts
+│       ├── components/         # Icons, badges and form fields, ticket tables and charts, activity feed, deployment record
+│       └── lib/                # API client, constants, formatting, theme, sound, deployment window, hooks
+├── Dockerfile                  # Two stages: Node builds the frontend, then a Python 3.12 image serves API + frontend
+├── .dockerignore               # Keeps .env, backups, dumps and node_modules out of the image
+├── docker-compose.yml          # Runs the app (servicedesk-app) and PostgreSQL 16 (servicedesk-postgres) together
+├── .env.example                # Template for .env: copy it and fill in real values
+├── .env                        # Real settings and passwords, shared by backend and frontend dev server. NOT in Git
+├── .gitignore                  # Keeps .env, databases, dumps, backups, node_modules and frontend/dist out of Git
+└── README.md                   # This file
 ```
 
-Inside `mlops_service_desk.py`, the code runs top to bottom in this order:
-
-| Section | What it does |
+| Request | Handled by |
 |---|---|
-| Settings | Reads `.env`, defines ticket types, statuses and validation rules |
-| Database | Connection pool and the `SCHEMA` (tables are created or upgraded on every start) |
-| Auth | Sign-up with an emailed 6-digit code, login, forgot password, signed login tokens |
-| Mail / notifications | Sends emails in the background and stores in-app notifications |
-| Tickets | Raise, list, view, assign, take ownership, start, hold, resume, close, comment, screenshots, VPN credentials and PDFs |
-| Failed deployments | Failed / Bug Fix Required with screenshots, then fix and resubmit for redeployment |
-| Users & roles | Admin role management, deleting users, the team list for assigning, and each person's own account page |
-| Frontend | The React page (`PAGE`), served at `/` |
-| Command line | `--test-email` and `--import-sqlite` tools, then starts the web server |
+| `/api/...` | The routers in `backend/app/routers/` |
+| `/` | `frontend/dist/index.html` (the built React app) |
+| `/assets/...` | The built JavaScript and CSS bundles (file names change with every build) |
+| `/logo.png` | `frontend/dist/logo.png` |
 
 ---
 
@@ -81,18 +112,41 @@ Inside `mlops_service_desk.py`, the code runs top to bottom in this order:
 ```
                           ┌──────────────── docker compose ─────────────────┐
  Users' browsers ──:8000──▶  servicedesk-app            servicedesk-postgres  │
-        │                 │  mlops_service_desk.py ──▶ PostgreSQL 16          │
-        │                 │  (FastAPI + Uvicorn)       volume: servicedesk_pgdata
-        │                 └────────┼────────────────────────────────────────┘
-        │                          └──SMTP :587──▶ smtp.office365.com  (notification emails)
-        │
-        └──HTTPS──▶ cdnjs.cloudflare.com  (React and Babel scripts loaded by the browser)
+                          │  backend (FastAPI) ───────▶ PostgreSQL 16          │
+                          │   ├─ /api/...  REST API     volume: servicedesk_pgdata
+                          │   └─ /  built React app (frontend/dist)              │
+                          └────────┼────────────────────────────────────────┘
+                                   └──SMTP :587──▶ smtp.office365.com  (notification emails)
 ```
 
-- The app serves both the web page (`/`) and the API (`/api/...`) on one port.
+- The backend serves both the web page (`/`) and the API (`/api/...`) on one port, so there is no cross-origin (CORS) setup.
 - Inside Docker the app reaches the database by its service name (`postgres:5432`).
 - PostgreSQL is also published on `127.0.0.1:5434` for backups and admin tools, but only on the server itself, never on the network.
-- Users' browsers need internet access to `cdnjs.cloudflare.com` to load React. Without it the page stays blank.
+- React is bundled into the built frontend, so users' browsers need no internet access to open the app.
+
+---
+
+## Local development
+
+You need Python 3.12+, Node.js 20.19+ (or 22.12+), and PostgreSQL running (`docker compose up -d postgres`). Both parts read the same `.env` in the project root.
+
+```bash
+# Backend (terminal 1)
+cd backend
+python -m venv .venv
+source .venv/bin/activate             # Windows: .venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python -m app                         # API on http://127.0.0.1:<PORT from .env>
+
+# Frontend (terminal 2)
+cd frontend
+npm ci
+npm run dev                           # http://127.0.0.1:5173 with live reload; /api is forwarded to the backend
+```
+
+- **Where the dev server sends API calls:** to `PORT` from `.env` by default. Set `BACKEND_URL` to point it somewhere else.
+- **Checking your changes:** `npm run lint` catches missing or unused imports. `npm run build` writes `frontend/dist`, which the backend serves at `http://127.0.0.1:<PORT>` exactly as in production.
+- **Restart after a build:** the backend reads `frontend/dist` when it starts, so restart it after a new build. Open tabs then show the *"A new version is available"* banner.
 
 ---
 
@@ -103,6 +157,7 @@ Inside `mlops_service_desk.py`, the code runs top to bottom in this order:
 | OS | Linux or Windows with Docker |
 | Docker | Docker Engine with the Compose plugin (`docker compose`) |
 | Python | Only for running without Docker: 3.12 or newer |
+| Node.js | Only for running without Docker: 20.19+ or 22.12+, to build the frontend |
 | Inbound port | `8000/tcp` (or the `APP_PORT` you choose) from the office network |
 | Outbound | SMTP to `smtp.office365.com:587` |
 | Hardware | 1 CPU, 1 GB RAM and a few GB of disk is plenty for a team |
@@ -142,7 +197,7 @@ Every start creates or upgrades the tables and makes each address in `ADMIN_EMAI
 ### 4. Check email, open the firewall, verify
 
 ```bash
-docker compose exec app python mlops_service_desk.py --test-email you@yourcompany.com
+docker compose exec app python -m app --test-email you@yourcompany.com
 ```
 
 Then open the firewall port and verify as in [steps 7 and 8 below](#7-open-the-firewall-port).
@@ -162,7 +217,7 @@ Then open the firewall port and verify as in [steps 7 and 8 below](#7-open-the-f
 
 ### What the Docker setup does
 
-- **Image:** `Dockerfile` builds from `python:3.12-slim`, installs the pinned `requirements.txt`, and runs the app as a non-root user. A health check calls the app every 30 seconds.
+- **Image:** `Dockerfile` has two stages. A `node:24-alpine` stage runs `npm ci` and `npm run build` on `frontend/`. The final `python:3.12-slim` image installs the pinned `backend/requirements.txt`, copies in `backend/app` and the built `frontend/dist`, and runs `python -m app` as a non-root user. Node is not in the final image. A health check calls the app every 30 seconds.
 - **No secrets in the image:** `.env`, backups and dumps are excluded by `.dockerignore`, and settings are passed in at runtime from `.env`.
 - **Time zone:** the container uses `TZ` (default `Asia/Kolkata`), so ticket times match local time.
 - **Start order:** the app waits until PostgreSQL is healthy before starting.
@@ -206,18 +261,24 @@ docker compose ps              # servicedesk-postgres should be "healthy"
 
 The container restarts automatically with Docker (`restart: unless-stopped`). Data lives in the `servicedesk_pgdata` volume, so it survives container restarts and upgrades.
 
-### 4. Install the Python packages
+### 4. Install the Python packages and build the frontend
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate     # Windows: .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -r backend/requirements.txt
+
+cd frontend
+npm ci                        # installs the exact versions in package-lock.json
+npm run build                 # writes frontend/dist, which the backend serves
+cd ..
 ```
 
 ### 5. Check that email works
 
 ```bash
-python mlops_service_desk.py --test-email you@yourcompany.com
+cd backend
+python -m app --test-email you@yourcompany.com
 ```
 
 It prints `Test email sent.` on success, or the SMTP error.
@@ -225,7 +286,8 @@ It prints `Test email sent.` on success, or the SMTP error.
 ### 6. Start the app
 
 ```bash
-python mlops_service_desk.py
+cd backend
+python -m app
 ```
 
 Every start creates or upgrades the tables and applies `ADMIN_EMAILS`. You should see the links to open, then `Uvicorn running on ...`.
@@ -251,7 +313,7 @@ New-NetFirewallRule -DisplayName "MLOps Service Desk" -Direction Inbound -Protoc
 
 ## Configuration reference (.env)
 
-The app reads `.env` from its own folder. Real environment variables override `.env`.
+The backend reads `.env` from the project root (the folder that holds `backend/` and `frontend/`), and so does the frontend dev server. Real environment variables override `.env`.
 
 | Variable | Required | Default | What it does |
 |---|:-:|---|---|
@@ -269,6 +331,9 @@ The app reads `.env` from its own folder. Real environment variables override `.
 | `SMTP_USER` / `SMTP_PASS` | | | Mailbox login. Microsoft 365 and Gmail need an **app password** |
 | `SMTP_FROM` | | `SMTP_USER` | Sender address shown on emails |
 | `TEAM_EMAILS` | | | Comma-separated emails shown in the admin's **Assign** dropdown |
+| `USER_ACCOUNTS` | | | `Name\|email\|password` entries, comma-separated, created as Users on every start if missing (see [User accounts](#user-accounts-from-env)) |
+| `FRONTEND_DIST` | | `frontend/dist` | Folder with the built frontend. Docker sets it; rarely needed otherwise |
+| `BACKEND_URL` | | `http://127.0.0.1:<PORT>` | Development only: where `npm run dev` forwards `/api` calls |
 
 Without SMTP settings, emails are printed to the console and the sign-up code is shown on screen. That's fine for local testing, but not for production.
 
@@ -330,10 +395,11 @@ Run this when someone who should be an admin shows up as a User. It applies `ADM
 
 ```bash
 # Docker (Linux or Windows PowerShell)
-docker compose exec app python mlops_service_desk.py --ensure-admins
+docker compose exec app python -m app --ensure-admins
 
-# Without Docker
-python mlops_service_desk.py --ensure-admins
+# Without Docker (from the backend folder)
+cd backend
+python -m app --ensure-admins
 ```
 
 Expected output ends with `Admins now: chaigrafana_alerts@iitmpravartak.net, admin@example.com`. If an address you expect is missing, check its spelling in `.env`, then run `docker compose up -d` so the container picks up the edited `.env`, and run the command again.
@@ -374,8 +440,8 @@ After=network-online.target docker.service
 Wants=network-online.target
 
 [Service]
-WorkingDirectory=/opt/Ticketing_Platform
-ExecStart=/opt/Ticketing_Platform/.venv/bin/python mlops_service_desk.py
+WorkingDirectory=/opt/Ticketing_Platform/backend
+ExecStart=/opt/Ticketing_Platform/.venv/bin/python -m app
 Restart=always
 RestartSec=5
 User=servicedesk
@@ -392,11 +458,11 @@ sudo journalctl -u servicedesk -f       # live logs
 
 ### Windows (Task Scheduler)
 
-Run as Administrator. This starts the app at boot:
+Run as Administrator. This starts the app at boot (the task runs `python -m app` inside the `backend` folder):
 
 ```powershell
 schtasks /Create /TN "MLOps Service Desk" /SC ONSTART /RU SYSTEM /RL HIGHEST `
-  /TR "C:\Ticketing_Platform\.venv\Scripts\python.exe C:\Ticketing_Platform\mlops_service_desk.py"
+  /TR "cmd /c cd /d C:\Ticketing_Platform\backend && C:\Ticketing_Platform\.venv\Scripts\python.exe -m app"
 ```
 
 ### HTTPS (recommended)
@@ -451,11 +517,12 @@ The older version runs fine against the newer database, because updates only eve
 
 ```bash
 git pull
-pip install -r requirements.txt     # inside the virtual environment
-sudo systemctl restart servicedesk  # or stop and start the process
+pip install -r backend/requirements.txt     # inside the virtual environment
+cd frontend && npm ci && npm run build && cd ..
+sudo systemctl restart servicedesk          # or stop and start the process
 ```
 
-To roll back, `git checkout <previous commit>` and restart.
+To roll back, `git checkout <previous commit>`, rebuild the frontend the same way, and restart.
 
 ---
 
@@ -572,10 +639,11 @@ Protections already built into the app:
 | `Port 8000 is already in use` (without Docker) | Another copy is running. Stop it, or change `PORT` |
 | `Cannot connect to PostgreSQL` at startup | The database isn't running. Run `docker compose up -d` and check `docker compose ps` |
 | "The database is unavailable right now" in the app | PostgreSQL stopped while the app was running. Start it again (`docker compose up -d`); if errors continue, restart the app |
-| Blank white page | The browser can't reach `cdnjs.cloudflare.com`. Allow it in the proxy or firewall |
+| "The frontend has not been built yet" at `/` | Without Docker: run `cd frontend && npm ci && npm run build`, then restart the backend |
+| Blank white page | Open the browser console (F12). After an update, press Ctrl+F5 so the browser loads the new bundle |
 | Others can't open the app | `HOST` isn't `0.0.0.0`, or the firewall blocks the port, or the server's IP changed |
 | Links in emails point to the wrong address | Fix `APP_URL` in `.env` and restart |
-| Emails not arriving | Run `docker compose exec app python mlops_service_desk.py --test-email you@company.com` (without Docker: `python mlops_service_desk.py --test-email ...`) and read the error. Check the Junk folder |
+| Emails not arriving | Run `docker compose exec app python -m app --test-email you@company.com` (without Docker: `cd backend && python -m app --test-email ...`) and read the error. Check the Junk folder |
 | `535 Authentication unsuccessful` from Outlook | Use an app password, and make sure SMTP AUTH is enabled for the mailbox in Microsoft 365 |
 | Users still see the old screen after an update | They press **Reload** on the banner, or F5 |
 
@@ -651,9 +719,12 @@ The profile button at the top right (initials, name and role) opens **My Account
 
 ### Command-line tools
 
+Run these from the `backend` folder (with Docker: `docker compose exec app python -m app ...`):
+
 ```bash
-python mlops_service_desk.py --test-email you@company.com     # check the SMTP settings
-python mlops_service_desk.py --import-sqlite old.db           # one-time import of users from the old SQLite version
+python -m app --test-email you@company.com     # check the SMTP settings
+python -m app --ensure-admins                  # apply ADMIN_EMAILS and USER_ACCOUNTS now, then list the admins
+python -m app --import-sqlite old.db           # one-time import of users from the old SQLite version
 ```
 
 ---

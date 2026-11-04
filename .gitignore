@@ -23,3 +23,7 @@ Thumbs.db
 backups/
 *.backup
 *.dump
+
+# Frontend (installed and built locally or inside the Docker image)
+frontend/node_modules/
+frontend/dist/
