@@ -64,7 +64,7 @@ Inside `mlops_service_desk.py`, the code runs top to bottom in this order:
 
 | Section | What it does |
 |---|---|
-| Settings | Reads `.env`, defines ticket types, statuses, priorities and validation rules |
+| Settings | Reads `.env`, defines ticket types, statuses and validation rules |
 | Database | Connection pool and the `SCHEMA` (tables are created or upgraded on every start) |
 | Auth | Sign-up with an emailed 6-digit code, login, forgot password, signed login tokens |
 | Mail / notifications | Sends emails in the background and stores in-app notifications |
@@ -609,7 +609,7 @@ The app logs to `docker compose logs -f app` with Docker, or to the console (`jo
 | Access Request | Access to: Git Repository (repository + access level), Model Endpoint (nothing else; the admin sends the URL) or VPN (VPN name). Access is always for the requester |
 | Other | Up to 5 screenshots |
 
-Users don't choose a priority; new tickets are MEDIUM.
+Tickets have no priority.
 
 **Deployment hours:** new Deployment Requests can be raised only from **8:00 AM to 5:30 PM India time (IST, Asia/Kolkata)**, with both times included. Outside these hours the Submit button is greyed out. Clicking it shows a "Deployment Request Closed" popup: "Today's ticket request time is over. You can try tomorrow between 8:00 AM and 5:30 PM." Before 8:00 AM the popup instead says to try today. The server makes the final decision using its own clock: `POST /api/requests` returns **403** for a Deployment Request outside these hours, including requests sent directly from Postman or curl. Access Requests, Other requests and everything on existing tickets (viewing, comments, status changes, closing, fail/resubmit) work at any time.
 
@@ -663,7 +663,7 @@ python mlops_service_desk.py --import-sqlite old.db           # one-time import 
 | Table | Holds |
 |---|---|
 | `users` | Accounts, roles (`user`, `engineer`, `admin`) and password hashes. No hash means an invited account; `deleted_at` marks a deleted account kept for ticket history |
-| `tickets` | Every ticket: type, priority, environment, repository, PR URL, access details (JSON), status, owner |
+| `tickets` | Every ticket: type, environment, repository, PR URL, access details (JSON), status, owner |
 | `ticket_resolutions` | Closure details for each closed ticket |
 | `ticket_history` | Audit trail: every assignment, status change, comment and closure |
 | `comments` | Conversation messages on tickets |

@@ -55,7 +55,6 @@ ROLES = ["user", "engineer", "admin"]
 STAT = ["NEW", "ASSIGNED", "IN PROGRESS", "ON HOLD", "CLOSED"]
 ACTIVE = ["ASSIGNED", "IN PROGRESS", "ON HOLD"]
 TYPES = ["Deployment Request", "Access Request", "Other"]
-PRIOS = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
 ENVS = ["Development", "Staging", "Production"]
 DEPLOY_STATUSES = ["Successfully Deployed"]
 DEP_TYPES = ["Manual", "CI/CD"]
@@ -107,7 +106,7 @@ create table if not exists tickets(
   id serial primary key,
   rid text generated always as ('MLOPS-' || lpad(id::text, greatest(4, length(id::text)), '0')) stored unique,
   title text not null, description text not null, type text not null,
-  priority text not null check (priority in ('LOW','MEDIUM','HIGH','CRITICAL')), env text not null,
+  priority text check (priority in ('LOW','MEDIUM','HIGH','CRITICAL')), env text not null,  -- no longer used; kept for old tickets
   repo text not null default '', pr_url text not null default '',
   status text not null default 'NEW' check (status in ('NEW','ASSIGNED','IN PROGRESS','ON HOLD','CLOSED')),
   requester_id int not null references users(id), assignee_id int references users(id),
@@ -134,6 +133,7 @@ create table if not exists audit_log(
 create table if not exists ticket_images(
   id serial primary key, ticket_id int not null references tickets(id) on delete cascade, name text not null,
   mime text not null, data bytea not null, created_at timestamptz not null default now());
+alter table tickets alter column priority drop not null;  -- tickets no longer have a priority
 alter table otps add column if not exists attempts int not null default 0;  -- wrong guesses; the code stops working after 5
 alter table tickets add column if not exists branch text not null default '';  -- Git branch to deploy (Deployment Request)
 alter table tickets add column if not exists access jsonb;  -- Access Request details: type, resource, level, for, until
@@ -348,7 +348,7 @@ class PwIn(BaseModel): ticket: str; password: str
 class ChangePwIn(BaseModel): current: str; password: str
 class LoginIn(BaseModel): email: str; password: str
 class ReqIn(BaseModel):
-    title: str; description: str; type: str = "Deployment Request"; priority: str = "MEDIUM"
+    title: str; description: str; type: str = "Deployment Request"
     env: str = "Production"; repo: str = ""; branch: str = ""; pr_url: str = ""; images: list[dict] = []  # images: [{name, data: "data:image/png;base64,..."}]
     access: dict = {}  # Access Request only: {type, resource, level, for, until}
 class FailIn(BaseModel): description: str; images: list[dict] = []
@@ -472,7 +472,7 @@ def ticket_text(t):
     a = t.get("access")
     extra = (f"Access To: {a['type']}\n" + (f"Server / System: {a['resource']}\n" if a["resource"] else "") + (f"Access Level: {a['level']}\n" if a["level"] else "")) if a else "" if t["type"] == "Other" else (
                  f"Repository: {t['repo'] or '-'}\n" + (f"Branch: {t['branch']}\n" if t["branch"] else "") + f"Pull Request: {t['pr_url'] or '-'}\n")
-    return (f"Ticket: {t['rid']}\nTitle: {t['title']}\nType: {t['type']}\nPriority: {t['priority']}\nEnvironment: {t['env']}\n"
+    return (f"Ticket: {t['rid']}\nTitle: {t['title']}\nType: {t['type']}\nEnvironment: {t['env']}\n"
             f"{extra}Raised by: {t['rname']} <{t['remail']}>\n"
             f"Created: {t['created_at']}\n\nDescription:\n{t['description']}\n\nOpen ticket: {link(t['rid'])}")
 def status_counts(where="true", a=()):
@@ -627,7 +627,7 @@ def create(b: ReqIn, u=Depends(user)):
     title, desc, repo, pr, branch = b.title.strip(), b.description.strip(), b.repo.strip(), b.pr_url.strip(), b.branch.strip()
     if not title or not desc: raise HTTPException(400, "Title and description are required")
     if len(title) > 200: raise HTTPException(400, "Title must be 200 characters or fewer")
-    if b.type not in TYPES or b.priority not in PRIOS or b.env not in ENVS: raise HTTPException(400, "Invalid type, priority or environment")
+    if b.type not in TYPES or b.env not in ENVS: raise HTTPException(400, "Invalid type or environment")
     access = None
     if b.type == "Access Request":
         repo, pr, access = "", "", parse_access(b.access, u)
@@ -644,9 +644,9 @@ def create(b: ReqIn, u=Depends(user)):
         branch = ""
     images = parse_images(b.images) if b.type in SHOT_TYPES else []
     with tx() as c:
-        t = c.execute("""insert into tickets(title,description,type,priority,env,repo,branch,pr_url,access,requester_id)
-                         values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) returning id, rid""",
-                      (title, desc, b.type, b.priority, b.env, repo, branch, pr, Jsonb(access) if access else None, u["id"])).fetchone()
+        t = c.execute("""insert into tickets(title,description,type,env,repo,branch,pr_url,access,requester_id)
+                         values(%s,%s,%s,%s,%s,%s,%s,%s,%s) returning id, rid""",
+                      (title, desc, b.type, b.env, repo, branch, pr, Jsonb(access) if access else None, u["id"])).fetchone()
         for name, mime, data in images:
             c.execute("insert into ticket_images(ticket_id,name,mime,data) values(%s,%s,%s,%s)", (t["id"], name, mime, data))
         hist(c, t["id"], "CREATED", u["id"], f"Created by {u['name']} <{u['email']}>"
@@ -1083,8 +1083,8 @@ input:focus,select:focus,textarea:focus{outline:0;border-color:var(--p);box-shad
 th{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--mu);background:#f8fafc;text-align:left;padding:11px 12px;border-bottom:1px solid var(--bd)}
 td{padding:13px 12px;border-bottom:1px solid #f1f5f9;text-align:left;vertical-align:top}tbody tr:hover{background:#f8fafc}
 .b{padding:3px 10px;border-radius:99px;font-size:11.5px;font-weight:700;background:#dbeafe;color:#1e40af;white-space:nowrap;display:inline-block}
-.b.CLOSED,.b.LOW{background:#dcfce7;color:#166534}.b.ASSIGNED,.b.MEDIUM{background:#fef3c7;color:#92400e}
-.b.HIGH,.b.CRITICAL{background:#fee2e2;color:#991b1b}.b.INPROGRESS{background:#e0f2fe;color:#075985}.b.ONHOLD{background:#f1f5f9;color:#475569}
+.b.CLOSED{background:#dcfce7;color:#166534}.b.ASSIGNED{background:#fef3c7;color:#92400e}
+.b.INPROGRESS{background:#e0f2fe;color:#075985}.b.ONHOLD{background:#f1f5f9;color:#475569}
 .b.admin{background:#ede9fe;color:#5b21b6}.b.engineer{background:#e0f2fe;color:#075985}.b.user{background:#f1f5f9;color:#475569}
 .empty{text-align:center;color:var(--mu);padding:34px 10px}
 /* ---------- tabs ---------- */
@@ -1197,9 +1197,8 @@ html[data-theme="dark"] .mbox.sm .ico{background:#2a1215;color:#f87171}
 html[data-theme="dark"] .ownbox{background:#211a3a;border-color:#4c1d95}
 html[data-theme="dark"] th{background:#10172a}html[data-theme="dark"] td{border-color:#1c2439}html[data-theme="dark"] tbody tr:hover{background:#18203a}
 html[data-theme="dark"] .b{background:#1e3a8a66;color:#93c5fd}
-html[data-theme="dark"] .b.CLOSED,html[data-theme="dark"] .b.LOW{background:#14532d80;color:#86efac}
-html[data-theme="dark"] .b.ASSIGNED,html[data-theme="dark"] .b.MEDIUM{background:#78350f80;color:#fcd34d}
-html[data-theme="dark"] .b.HIGH,html[data-theme="dark"] .b.CRITICAL{background:#7f1d1d80;color:#fca5a5}
+html[data-theme="dark"] .b.CLOSED{background:#14532d80;color:#86efac}
+html[data-theme="dark"] .b.ASSIGNED{background:#78350f80;color:#fcd34d}
 html[data-theme="dark"] .b.INPROGRESS,html[data-theme="dark"] .b.engineer{background:#0c4a6e80;color:#7dd3fc}
 html[data-theme="dark"] .b.ONHOLD,html[data-theme="dark"] .b.user{background:#33415580;color:#cbd5e1}
 html[data-theme="dark"] .b.admin{background:#4c1d9580;color:#c4b5fd}
@@ -1239,7 +1238,7 @@ const DESC={"NEW":"Waiting for assignment","ASSIGNED":"Owner assigned","IN PROGR
 const ROLES=["user","engineer","admin"],ROLE_NAME={user:'User',engineer:'MLOps Engineer',admin:'Admin'};
 const ACTION={CREATED:'Created',ASSIGNED:'Assigned',REASSIGNED:'Reassigned',OWNERSHIP_TAKEN:'Ownership taken',STATUS_CHANGED:'Status changed',COMMENTED:'Comment',CLOSED:'Closed',
   DEPLOY_FAILED:'Failed / bug fix required',RESUBMITTED:'Resubmitted for redeployment'};
-const TYPES=["Deployment Request","Access Request","Other"],PRIOS=["LOW","MEDIUM","HIGH","CRITICAL"],ENVS=["Development","Staging","Production"];
+const TYPES=["Deployment Request","Access Request","Other"],ENVS=["Development","Staging","Production"];
 const DEPLOY=["Successfully Deployed","Failed / Bug Fix Required"],FAILED=DEPLOY[1],ACCESS_STAT=["Access Granted","Partially Granted","Rejected"];
 const ACCESS_LEVELS=["Read only","Read & Write","Admin"];
 // What to ask for in the "server / system" box, per kind of access
@@ -1310,10 +1309,10 @@ function chime(force){
 }
 
 function ReqTable({rows,go,requester,empty='No tickets yet.'}){
-  return <div className="tw"><table><thead><tr><th>ID</th><th>Title</th><th>Priority</th><th>Status</th>{requester&&<th>Requester</th>}<th>Owner</th><th>Updated</th></tr></thead><tbody>
-    {rows.map(r=><tr key={r.rid}><td><a className="l" onClick={()=>go('detail',r.rid)}>{r.rid}</a></td><td>{r.title}</td><td><Badge v={r.priority}/></td><td><StatusBadge r={r}/></td>
+  return <div className="tw"><table><thead><tr><th>ID</th><th>Title</th><th>Status</th>{requester&&<th>Requester</th>}<th>Owner</th><th>Updated</th></tr></thead><tbody>
+    {rows.map(r=><tr key={r.rid}><td><a className="l" onClick={()=>go('detail',r.rid)}>{r.rid}</a></td><td>{r.title}</td><td><StatusBadge r={r}/></td>
       {requester&&<td>{r.rname}</td>}<td>{r.aname||'Unassigned'}</td><td>{r.updated_at}</td></tr>)}
-    {!rows.length&&<tr><td colSpan={requester?7:6} className="empty">{empty}</td></tr>}</tbody></table></div>;
+    {!rows.length&&<tr><td colSpan={requester?6:5} className="empty">{empty}</td></tr>}</tbody></table></div>;
 }
 // Runs load() now and every 10 s while the tab is visible, so dashboards and lists follow changes made by other people
 function useLive(load,deps=[],ms=10000){
@@ -1891,7 +1890,7 @@ function Detail({id,me,flash,refresh,go}){
     <h3 style={{margin:'6px 0 16px',color:'var(--mu)',fontWeight:500}}>{r.title}</h3>
     <Tabs v={tab} set={setTab} items={[['details','Details'],['tracker','Tracker'],['conv','Conversation'],['history','Audit History']]}/>
     {tab==='details'&&<div><table className="kv"><tbody>
-      <Row k="Requester">{`${r.rname} <${r.remail}>`}</Row><Row k="Type">{r.type}</Row><Row k="Priority"><Badge v={r.priority}/></Row><Row k="Environment">{r.env}</Row>
+      <Row k="Requester">{`${r.rname} <${r.remail}>`}</Row><Row k="Type">{r.type}</Row><Row k="Environment">{r.env}</Row>
       {r.access?<><Row k="Access To">{r.access.type}</Row>{r.access.resource?<Row k={ACCESS_TYPES[r.access.type]?.[0]||'Server / System'}><b>{r.access.resource}</b></Row>:null}
         {r.access.level?<Row k="Access Level">{r.access.level}</Row>:null}{r.access.for!==r.remail?<Row k="Access For">{r.access.for.split(',').join(', ')}</Row>:null}{r.access.until?<Row k="Needed Until">{r.access.until}</Row>:null}</>
       :r.type!=='Other'&&<><Row k="Repository">{/^https?:\/\//.test(r.repo)?<Url u={r.repo}/>:r.repo||'-'}</Row>{r.branch?<Row k="Branch"><b>{r.branch}</b></Row>:null}<Row k="Pull Request"><Url u={r.pr_url}/></Row></>}
