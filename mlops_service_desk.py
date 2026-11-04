@@ -509,8 +509,6 @@ def dashboard(u=Depends(user)):
         d["kpi"] = q("""select (select count(*) from tickets where created_at >= now() - interval '7 days') created_7d,
                 (select count(*) from ticket_resolutions where closed_at >= now() - interval '7 days') closed_7d,
                 (select extract(epoch from avg(r.closed_at - t.created_at)) from ticket_resolutions r join tickets t on t.id=r.ticket_id) avg_resolution_s""", (), True)
-        d["priority_open"] = dict.fromkeys(PRIOS, 0) | {x["priority"]: x["c"] for x in
-                             q("select priority, count(*) c from tickets where status<>'CLOSED' group by priority")}
         d["workload"] = q("""select u.id, u.name, u.email, u.role, (u.pw_hash is not null) active,
                   count(t.id) filter (where t.status='ASSIGNED') assigned, count(t.id) filter (where t.status='IN PROGRESS') in_progress,
                   count(t.id) filter (where t.status='ON HOLD') on_hold,
@@ -1106,8 +1104,12 @@ td{padding:13px 12px;border-bottom:1px solid #f1f5f9;text-align:left;vertical-al
 .sbar{display:flex;height:16px;border-radius:99px;overflow:hidden;background:#e2e8f0;gap:2px}.sbar i{display:block;height:100%}
 .legend{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:12px;font-size:13px;color:#475569}.legend span{display:flex;align-items:center;gap:6px}
 .legend b{width:10px;height:10px;border-radius:3px;display:inline-block}
-.hbar{display:grid;grid-template-columns:80px 1fr 36px;gap:10px;align-items:center;margin:8px 0;font-size:13px}.hbar span{font-weight:600;color:#475569}
-.hbar div{background:#f1f5f9;border-radius:99px;height:10px;overflow:hidden}.hbar i{display:block;height:100%;border-radius:99px}.hbar b{text-align:right}
+.vplot{position:relative;height:190px;margin:26px 0 0 30px}.vgrid{position:absolute;left:0;right:0;border-top:1px solid #eef2f7}.vgrid.base{border-color:#cbd5e1}
+.vgrid span{position:absolute;left:-30px;width:24px;text-align:right;transform:translateY(-50%);font-size:11px;color:#94a3b8}
+.vcols{position:absolute;inset:0;display:flex;gap:14px;padding:0 6px}.vcol{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center}
+.vcol b{flex-shrink:0;font-size:13px;margin-bottom:4px}.vcol i{flex-shrink:0;display:block;width:min(56px,75%);border-radius:4px 4px 0 0}
+.vcol.click{cursor:pointer}.vcol.click:hover i{filter:brightness(.9)}
+.vlabels{display:flex;gap:14px;padding:0 6px;margin:8px 0 0 30px}.vlabels span{flex:1;text-align:center;font-size:12.5px;font-weight:600;color:#475569}.vlabels small{display:block;font-weight:400;color:#94a3b8}
 .act{display:flex;align-items:flex-start;gap:12px;padding:12px 0;border-bottom:1px solid #f1f5f9}.act .aic{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;flex:none}.act .atx{flex:1;min-width:0;line-height:1.45}.act .atx q{color:var(--mu)}.act:last-child{border-bottom:0}.act small{color:var(--mu);white-space:nowrap}.act a.l{white-space:nowrap}
 .note.warn{background:#fffbeb;border-color:#fde68a;color:#92400e}
 .btn.off,.btn.off:hover{opacity:.55;cursor:not-allowed;transform:none;box-shadow:none;background:var(--p)}
@@ -1204,8 +1206,9 @@ html[data-theme="dark"] .b.admin{background:#4c1d9580;color:#c4b5fd}
 html[data-theme="dark"] .tabs{background:#0e1424}html[data-theme="dark"] .tabs a{color:var(--mu)}html[data-theme="dark"] .tabs a.on{background:var(--card);color:#a5b4fc}
 html[data-theme="dark"] .seg3 button.on{color:#a5b4fc}
 html[data-theme="dark"] .sbar,html[data-theme="dark"] .meter{background:#263049}
-html[data-theme="dark"] .legend,html[data-theme="dark"] .hbar span,html[data-theme="dark"] .kv td:first-child{color:var(--mu)}
-html[data-theme="dark"] .hbar div{background:#1c2439}html[data-theme="dark"] .act{border-color:#1c2439}
+html[data-theme="dark"] .legend,html[data-theme="dark"] .vlabels span,html[data-theme="dark"] .kv td:first-child{color:var(--mu)}
+html[data-theme="dark"] .vgrid{border-color:#1c2439}html[data-theme="dark"] .vgrid.base{border-color:#334155}
+html[data-theme="dark"] .act{border-color:#1c2439}
 html[data-theme="dark"] .step{color:#64748b}html[data-theme="dark"] .step.done{color:#86efac}
 html[data-theme="dark"] .seg::before,html[data-theme="dark"] .dot{background:#263049}html[data-theme="dark"] .dot{color:var(--mu);border-color:var(--card)}
 html[data-theme="dark"] .seg.done::before,html[data-theme="dark"] .step.done .dot{background:#16a34a}
@@ -1319,7 +1322,6 @@ function useLive(load,deps=[],ms=10000){
 const LABEL={NEW:'Pending','ASSIGNED':'Assigned','IN PROGRESS':'In Progress','ON HOLD':'On Hold',CLOSED:'Closed'};
 const SC={NEW:['#1d4ed8','#dbeafe','#3b82f6'],ASSIGNED:['#92400e','#fef3c7','#f59e0b'],'IN PROGRESS':['#075985','#e0f2fe','#0ea5e9'],'ON HOLD':['#475569','#f1f5f9','#94a3b8'],CLOSED:['#166534','#dcfce7','#22c55e']};
 const SICON={NEW:'plus',ASSIGNED:'user','IN PROGRESS':'clock','ON HOLD':'pause',CLOSED:'check'};
-const PC={LOW:'#22c55e',MEDIUM:'#f59e0b',HIGH:'#f97316',CRITICAL:'#ef4444'};
 const fmtDur=s=>s==null?'–':s<3600?`${Math.max(1,Math.round(s/60))} min`:s<172800?`${(s/3600).toFixed(1)} h`:`${(s/86400).toFixed(1)} days`;
 const Stat=({label,value,icon,color,bg,onClick,sub})=><div className={'stat'+(onClick?' click':'')} onClick={onClick} title={onClick?'Open this list':undefined}>
   <div className="ic" style={{background:bg,color}}><Ic n={icon} s={22}/></div><div><small>{label}</small><h2>{value??'–'}</h2>{sub&&<div className="ssub">{sub}</div>}</div></div>;
@@ -1331,6 +1333,15 @@ function StatusBar({c}){
   const t=c.TOTAL||0;
   return <div><div className="sbar">{t?STAT.filter(s=>c[s]).map(s=><i key={s} style={{width:(c[s]/t*100)+'%',background:SC[s][2]}} title={`${LABEL[s]}: ${c[s]}`}/>):<i style={{width:'100%',background:'#e2e8f0'}}/>}</div>
     <div className="legend">{STAT.map(s=><span key={s}><b style={{background:SC[s][2]}}/>{LABEL[s]} <strong>{c[s]}</strong> ({t?Math.round(c[s]/t*100):0}%)</span>)}</div></div>;
+}
+// Column chart of ticket counts per status; the y-axis has 4 even steps. Click a column to open that list.
+function StatusChart({c,pick}){
+  const t=c.TOTAL||0,step=Math.max(1,Math.ceil(Math.max(...STAT.map(s=>c[s]||0))/4)),top=step*4,pct=s=>t?Math.round(c[s]/t*100):0;
+  return <div className="vchart"><div className="vplot">
+      {[0,1,2,3,4].map(i=><div key={i} className={'vgrid'+(i?'':' base')} style={{bottom:i*25+'%'}}><span>{i*step}</span></div>)}
+      <div className="vcols">{STAT.map(s=><div key={s} className={'vcol'+(pick?' click':'')} onClick={pick&&(()=>pick(s))} title={`${LABEL[s]}: ${c[s]} (${pct(s)}%)`}>
+        <b>{c[s]}</b><i style={{height:(c[s]||0)/top*100+'%',background:SC[s][2]}}/></div>)}</div></div>
+    <div className="vlabels">{STAT.map(s=><span key={s}>{LABEL[s]}<small>{pct(s)}%</small></span>)}</div></div>;
 }
 // Recent Activity: one plain sentence per event. Returns [icon, colour, text before the ticket id, text after it].
 const ago=(ts,now)=>{const s=Math.max(0,now-ts);return s<60?'just now':s<3600?`${Math.floor(s/60)} min ago`:s<86400?`${Math.floor(s/3600)} h ago`:s<172800?'yesterday':`${Math.floor(s/86400)} days ago`};
@@ -1463,7 +1474,7 @@ function AdminDash({me,go}){
   const [d,setD]=useState(null);
   useLive(()=>api('/dashboard').then(setD));
   if(!d)return <div className="card">Loading…</div>;
-  const a=d.all,k=d.kpi,pmax=Math.max(1,...PRIOS.map(p=>d.priority_open[p]));
+  const a=d.all,k=d.kpi;
   return <div><h2 className="hello">Admin Dashboard</h2><p className="sub">Every ticket in the service desk. Click a card to open that list. Updates automatically.</p>
     <StatusCards c={a} pick={s=>go('queue',s)} total="All Tickets" order={['NEW','ASSIGNED','IN PROGRESS','ALL','ON HOLD','CLOSED']}/>
     <div className="grid">
@@ -1474,9 +1485,7 @@ function AdminDash({me,go}){
       <Stat label="My Owned (open)" value={d.owned.OPEN} icon="user" color="#0369a1" bg="#e0f2fe" onClick={()=>go('assigned','ALL')} sub="Tickets you took ownership of"/>
     </div>
     <div className="cols">
-      <div className="card"><CardHead title="Status Breakdown"/><StatusBar c={a}/>
-        <h4 style={{margin:'22px 0 10px'}}>Open Tickets by Priority</h4>
-        {PRIOS.map(p=><div key={p} className="hbar"><span>{p}</span><div><i style={{width:(d.priority_open[p]/pmax*100)+'%',background:PC[p]}}/></div><b>{d.priority_open[p]}</b></div>)}</div>
+      <div className="card"><CardHead title="Status Breakdown"/><StatusChart c={a} pick={s=>go('queue',s)}/></div>
       <div className="card"><CardHead title="Users"><button className="btn ghost" onClick={()=>go('users')}>Manage</button></CardHead>
         <table className="kv"><tbody>{ROLES.map(r=><Row key={r} k={ROLE_NAME[r]+'s'}>{d.users[r]}</Row>)}<Row k="Invited (not signed up)">{d.users.invited}</Row></tbody></table></div>
     </div>
