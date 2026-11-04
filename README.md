@@ -611,6 +611,8 @@ The app logs to `docker compose logs -f app` with Docker, or to the console (`jo
 
 Users don't choose a priority; new tickets are MEDIUM.
 
+**Deployment hours:** new Deployment Requests can be raised only from **8:00 AM to 5:30 PM India time (IST, Asia/Kolkata)**, with both times included. Outside these hours the Submit button is greyed out. Clicking it shows a "Deployment Request Closed" popup: "Today's ticket request time is over. You can try tomorrow between 8:00 AM and 5:30 PM." Before 8:00 AM the popup instead says to try today. The server makes the final decision using its own clock: `POST /api/requests` returns **403** for a Deployment Request outside these hours, including requests sent directly from Postman or curl. Access Requests, Other requests and everything on existing tickets (viewing, comments, status changes, closing, fail/resubmit) work at any time.
+
 ### Ticket workflow
 
 ```

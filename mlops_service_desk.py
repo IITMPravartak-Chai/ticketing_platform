@@ -13,6 +13,8 @@
 # Deployment records: closing a Deployment Request as Successfully Deployed needs a deployment details form (Manual or
 # CI/CD: server, IP, app, method, pipeline...). The record and the closure are saved in ONE transaction. Records are
 # confidential: only admins can list or read them (Deployment Details page); requesters only see status, date and app URL.
+# Deployment window: new Deployment Requests are accepted only 08:00-17:30 India time (Asia/Kolkata), checked by the
+# server on every create (403 outside it). Everything else (other request types, viewing, updates) is never blocked.
 # Tools:  python mlops_service_desk.py --test-email you@example.com   |   python mlops_service_desk.py --import-sqlite servicedesk.db
 #         python mlops_service_desk.py --ensure-admins   (applies ADMIN_EMAILS and USER_ACCOUNTS without starting the server)
 # The React frontend loads React + Babel from cdnjs, so the browser needs internet access.
@@ -20,7 +22,7 @@ import os, re, sys, io, json, hmac, hashlib, base64, time, smtplib, secrets, log
 from xml.sax.saxutils import escape
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from typing import Optional
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
@@ -67,6 +69,22 @@ EMAIL_RE = re.compile(r"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$")
 BRANCH_RE = re.compile(r"^[\w][\w./-]{0,199}$")  # Git branch names: letters, digits, _ . / - and no spaces
 URL_RE = re.compile(r"^https?://\S+$")
 DELETED_DOMAIN = "removed.invalid"  # deleted accounts with ticket history get deleted-<id>@removed.invalid; never emailed
+# Deployment Requests can be raised only from 08:00 to 17:30 (both included, to the minute) India time. The server clock
+# decides, never the browser. India has no daylight saving, so a fixed +05:30 offset is exact and needs no tzdata.
+IST = timezone(timedelta(hours=5, minutes=30), "Asia/Kolkata")
+DEPLOY_OPEN, DEPLOY_CLOSE = (8, 0), (17, 30)
+
+def ist_now(): return datetime.now(IST)
+def deploy_window(now=None):
+    now = (now or ist_now()).astimezone(IST); hm = (now.hour, now.minute)
+    is_open = DEPLOY_OPEN <= hm <= DEPLOY_CLOSE
+    when = "" if is_open else "today" if hm < DEPLOY_OPEN else "tomorrow"  # before 08:00 it opens later today
+    return {"open": is_open, "reopens": when, "opens": "8:00 AM", "closes": "5:30 PM", "tz": "Asia/Kolkata",
+            "now": now.isoformat(timespec="seconds"), "now_ms": int(now.timestamp() * 1000)}
+def deploy_closed_msg(w):
+    return "Deployment Request closed. " + (  # same wording as the popup
+        "Today's ticket request time is over. You can try tomorrow between 8:00 AM and 5:30 PM." if w["reopens"] == "tomorrow"
+        else "Ticket requests have not opened yet. You can try today between 8:00 AM and 5:30 PM.")
 
 def fmt(d): return d.astimezone().strftime("%b %d, %Y %I:%M %p")
 def clean_email(e):
@@ -599,8 +617,15 @@ def parse_access(a, u):
     # Access is always for the requester; the admin decides how long it lasts
     return {"type": kind, "resource": res[:300], "level": level, "for": u["email"], "until": ""}
 
+@app.get("/api/deploy-window")
+def deploy_window_api(u=Depends(user)): return deploy_window()  # the Raise Request form shows Open / Closed from this
 @app.post("/api/requests")
 def create(b: ReqIn, u=Depends(user)):
+    if b.type == "Deployment Request":  # checked first and on the server, so Postman / curl cannot get round it
+        w = deploy_window()
+        if not w["open"]:
+            log.info("Deployment Request from %s refused at %s IST (outside 08:00-17:30)", u["email"], w["now"])
+            raise HTTPException(403, deploy_closed_msg(w))
     title, desc, repo, pr, branch = b.title.strip(), b.description.strip(), b.repo.strip(), b.pr_url.strip(), b.branch.strip()
     if not title or not desc: raise HTTPException(400, "Title and description are required")
     if len(title) > 200: raise HTTPException(400, "Title must be 200 characters or fewer")
@@ -1085,6 +1110,8 @@ td{padding:13px 12px;border-bottom:1px solid #f1f5f9;text-align:left;vertical-al
 .hbar div{background:#f1f5f9;border-radius:99px;height:10px;overflow:hidden}.hbar i{display:block;height:100%;border-radius:99px}.hbar b{text-align:right}
 .act{display:flex;align-items:flex-start;gap:12px;padding:12px 0;border-bottom:1px solid #f1f5f9}.act .aic{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;flex:none}.act .atx{flex:1;min-width:0;line-height:1.45}.act .atx q{color:var(--mu)}.act:last-child{border-bottom:0}.act small{color:var(--mu);white-space:nowrap}.act a.l{white-space:nowrap}
 .note.warn{background:#fffbeb;border-color:#fde68a;color:#92400e}
+.btn.off,.btn.off:hover{opacity:.55;cursor:not-allowed;transform:none;box-shadow:none;background:var(--p)}
+.mbox.sm{max-width:440px;text-align:center}.mbox.sm .ico{width:56px;height:56px;border-radius:50%;background:#fef2f2;color:#dc2626;display:inline-flex;align-items:center;justify-content:center;margin-bottom:6px}.mbox.sm p{color:var(--mu);line-height:1.55}
 /* ---------- tracker ---------- */
 .track{display:flex;margin:26px 0 12px}
 .step{flex:1;text-align:center;font-size:12px;color:#94a3b8;position:relative;padding:0 4px}
@@ -1164,6 +1191,7 @@ html[data-theme="dark"] label{color:#cbd5e1}
 html[data-theme="dark"] input,html[data-theme="dark"] select,html[data-theme="dark"] textarea{background:#0e1424;border-color:#334155;color:var(--tx)}
 html[data-theme="dark"] .note{background:#13203f;border-color:#1e3a8a;color:#bfdbfe}
 html[data-theme="dark"] .note.warn{background:#2e2108;border-color:#78350f;color:#fcd34d}
+html[data-theme="dark"] .mbox.sm .ico{background:#2a1215;color:#f87171}
 html[data-theme="dark"] .ownbox{background:#211a3a;border-color:#4c1d95}
 html[data-theme="dark"] th{background:#10172a}html[data-theme="dark"] td{border-color:#1c2439}html[data-theme="dark"] tbody tr:hover{background:#18203a}
 html[data-theme="dark"] .b{background:#1e3a8a66;color:#93c5fd}
@@ -1461,12 +1489,29 @@ function AdminDash({me,go}){
       {d.recent.map(h=><Activity key={h.id} h={h} now={d.now} go={go}/>)}
       {!d.recent.length&&<div className="empty">No activity yet.</div>}</div></div>;
 }
+// Deployment window: Deployment Requests only 08:00-17:30 India time. Uses the SERVER clock (offset from /deploy-window),
+// never the browser's own time; the server checks again on submit, so this is only for the user's convenience.
+const istMin=ms=>(Math.floor(ms/60000)+330)%1440;  // minute of the day in India (UTC+05:30, no daylight saving)
+const depOpen=m=>m>=480&&m<=1050,depWhen=m=>m<480?'today':'tomorrow';
+function DeployClosed({when,close}){
+  useEffect(()=>{const k=e=>{if(e.key==='Escape')close()};addEventListener('keydown',k);return()=>removeEventListener('keydown',k)},[]);
+  return <div className="modal" onClick={e=>{if(e.target===e.currentTarget)close()}}><div className="mbox sm" role="alertdialog" aria-modal="true" aria-labelledby="dc-t">
+    <div className="ico"><Ic n="clock" s={28}/></div><h3 id="dc-t" style={{margin:'6px 0'}}>Deployment Request Closed</h3>
+    {when==='tomorrow'?<p>Today's ticket request time is over.<br/>You can try tomorrow between 8:00 AM and 5:30 PM.</p>
+      :<p>Ticket requests have not opened yet.<br/>You can try today between 8:00 AM and 5:30 PM.</p>}
+    <button className="btn" onClick={close} autoFocus>OK, got it</button></div></div>;
+}
 function Raise({go,flash}){
   const [f,setF]=useState({title:'',description:'',type:TYPES[0],env:'Production',repo:'',branch:'',pr_url:''}),[busy,setBusy]=useState(false);
+  const [skew,setSkew]=useState(null),[,setTick]=useState(0),[pop,setPop]=useState(false);
+  const syncClock=()=>api('/deploy-window').then(w=>setSkew(w.now_ms-Date.now())).catch(()=>{});
+  useEffect(()=>{syncClock();const i=setInterval(()=>setTick(x=>x+1),15000);return()=>clearInterval(i)},[]);
+  const isDep=f.type==='Deployment Request',nowM=skew===null?null:istMin(Date.now()+skew),closed=isDep&&nowM!==null&&!depOpen(nowM);
   const [imgs,setImgs]=useState([]),[ac,setAc]=useState({type:'Git Repository',resource:'',level:'Read only',for:'',until:''});
   const u=k=>e=>setF({...f,[k]:e.target.value}),ua=k=>e=>setAc({...ac,[k]:e.target.value});
   const isAcc=f.type==='Access Request',isOther=f.type==='Other',shots=isOther,[resLabel,resHint]=ACCESS_TYPES[ac.type];
-  const submit=async e=>{e.preventDefault();setBusy(true);try{const r=await api('/requests','POST',{...f,images:shots?imgs:[],access:isAcc?ac:{}});chime();go('submitted',r.rid)}catch(x){flash(x.message);setBusy(false)}};
+  const submit=async e=>{e.preventDefault();if(closed){setPop(true);return}setBusy(true);try{const r=await api('/requests','POST',{...f,images:shots?imgs:[],access:isAcc?ac:{}});chime();go('submitted',r.rid)}
+    catch(x){setBusy(false);if(/^Deployment Request closed/.test(x.message)){syncClock();setPop(true)}else flash(x.message)}};
   return <div className="card" style={{maxWidth:820}}><h2>Raise Request</h2><p className="sub">Fill in the details. The admin will assign an owner.</p><form onSubmit={submit}>
     <F l="Request Title" value={f.title} onChange={u('title')} required maxLength="200" placeholder={isAcc?'Access to the ml-model-service repository':'Deploy model-service'}/>
     <label>{isAcc?'Why do you need this access?':'Description'}<textarea rows="4" value={f.description} onChange={u('description')} required
@@ -1483,7 +1528,9 @@ function Raise({go,flash}){
         pattern="[\w][\w.\/\-]*" title="Letters, numbers and _ . / - only (no spaces)"/>}
       <F l="Pull Request URL" type="url" required value={f.pr_url} onChange={u('pr_url')} placeholder="https://github.com/.../pull/245"/></>}
     {shots&&<ImgPicker imgs={imgs} set={setImgs} flash={flash}/>}
-    <button className="btn" disabled={busy}>Submit Request</button></form></div>;
+    {closed?<button type="button" className="btn off" aria-disabled="true" title="Deployment requests are closed now" onClick={()=>setPop(true)}>Submit Request</button>
+      :<button className="btn" disabled={busy}>Submit Request</button>}</form>
+    {pop&&<DeployClosed when={depWhen(nowM===null?istMin(Date.now()):nowM)} close={()=>setPop(false)}/>}</div>;
 }
 function Submitted({rid,go}){
   return <div className="card" style={{maxWidth:520,margin:'30px auto',textAlign:'center'}}><div className="ok"><Ic n="check" s={44}/></div>
