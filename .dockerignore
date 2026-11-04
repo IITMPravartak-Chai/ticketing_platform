@@ -1,4 +1,4 @@
-﻿# Only requirements.txt, mlops_service_desk.py and chai_logo.png are needed in the image.
+﻿# Only backend/ (code + requirements.txt) and frontend/ (sources, built inside the image) are needed.
 # Secrets and data must never be baked into it.
 .env
 *.sql
@@ -16,3 +16,5 @@ venv/
 .idea/
 dom.html
 README.md
+frontend/node_modules/
+frontend/dist/
