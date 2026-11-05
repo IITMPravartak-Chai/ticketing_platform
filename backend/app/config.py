@@ -41,7 +41,9 @@ EMAIL_RE = re.compile(r"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$")
 BRANCH_RE = re.compile(r"^[\w][\w./-]{0,199}$")  # Git branch names: letters, digits, _ . / - and no spaces
 URL_RE = re.compile(r"^https?://\S+$")
 DELETED_DOMAIN = "removed.invalid"  # deleted accounts with ticket history get deleted-<id>@removed.invalid; never emailed
-# Deployment Requests can be raised only from 08:00 to 17:30 (both included, to the minute) India time. The server clock
-# decides, never the browser. India has no daylight saving, so a fixed +05:30 offset is exact and needs no tzdata.
+# MLOps working hours for Deployment Requests: 08:00 to 17:30 (both included, to the minute) India time. Requests are
+# accepted at any time; one sent from EARLY_OPEN up to 08:00, or after 17:30, gets an information popup. The server
+# clock decides, never the browser. India has no daylight saving, so a fixed +05:30 offset is exact and needs no tzdata.
 IST = timezone(timedelta(hours=5, minutes=30), "Asia/Kolkata")
 DEPLOY_OPEN, DEPLOY_CLOSE = (8, 0), (17, 30)
+EARLY_OPEN = (6, 0)

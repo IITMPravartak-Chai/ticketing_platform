@@ -10,13 +10,15 @@ import {OwnerPanel} from './OwnerActions';
 import {BugReports,Resubmit,Closure,Shots,segText,DepPointer} from './TicketParts';
 
 export function Detail({id,me,flash,refresh,go}){
-  const [r,setR]=useState(null),[tab,setTab]=useState('details'),[body,setBody]=useState(''),[tip,setTip]=useState(null);
+  const [r,setR]=useState(null),[tab,setTab]=useState('details'),[body,setBody]=useState(''),[tip,setTip]=useState(null),[err,setErr]=useState('');
   const isA=me.role==='admin';
-  const load=useCallback(()=>api('/requests/'+id).then(setR).catch(e=>flash(e.message)),[id]);
+  const load=useCallback(()=>api('/requests/'+id).then(setR).catch(e=>{flash(e.message);setErr(e.message)}),[id]);
   useEffect(()=>{load()},[id]);
   // Follow changes made by other people (e.g. a failed deployment being resubmitted) without leaving the page
   useEffect(()=>{const t=setInterval(()=>{if(!document.hidden)api('/requests/'+id).then(setR).catch(()=>{})},10000);return()=>clearInterval(t)},[id]);
-  if(!r)return <div className="card">Loading…</div>;
+  // A ticket that doesn't exist or isn't yours (e.g. an old email link) says so instead of loading forever
+  if(!r)return <div className="card">{err?<><h3 style={{marginTop:0}}>{id}</h3><p className="sub">{err}. It may not exist, or you may not have access to it.</p>
+    <button className="btn ghost" onClick={()=>go('dashboard')}>Back to Dashboard</button></>:'Loading…'}</div>;
   const act=async(p,b,ok)=>{try{const d=await api('/requests/'+id+p,'POST',b);await load();refresh();if(ok)flash(typeof ok==='function'?ok(d):ok);return true}catch(e){flash(e.message);await load();return false}};
   const active=ACTIVE.includes(r.status);
   const send=async e=>{e.preventDefault();if(await act('/comments',{body}))setBody('')};

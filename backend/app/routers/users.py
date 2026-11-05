@@ -32,6 +32,8 @@ def set_role(uid: int, b: RoleIn, u=Depends(admin)):
         x = c.execute("select id, email, role from users where id=%s and deleted_at is null for update", (uid,)).fetchone()
         if not x: raise HTTPException(404, "User not found")
         if x["role"] == b.role: return {"ok": True}
+        if b.role != "admin" and x["email"] in configured_admin_emails():
+            raise HTTPException(400, f"{x['email']} is listed in ADMIN_EMAILS, so it would become an admin again on the next restart. Remove it from .env first.")
         if b.role == "user":
             n = c.execute("select count(*) c from tickets where assignee_id=%s and status<>'CLOSED'", (uid,)).fetchone()["c"]
             if n: raise HTTPException(400, f"{x['email']} still owns {n} open ticket(s). Reassign them first.")

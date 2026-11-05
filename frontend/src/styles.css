@@ -88,8 +88,8 @@ td{padding:13px 12px;border-bottom:1px solid #f1f5f9;text-align:left;vertical-al
 .vlabels{display:flex;gap:14px;padding:0 6px;margin:8px 0 0 30px}.vlabels span{flex:1;text-align:center;font-size:12.5px;font-weight:600;color:#475569}.vlabels small{display:block;font-weight:400;color:#94a3b8}
 .act{display:flex;align-items:flex-start;gap:12px;padding:12px 0;border-bottom:1px solid #f1f5f9}.act .aic{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;flex:none}.act .atx{flex:1;min-width:0;line-height:1.45}.act .atx q{color:var(--mu)}.act:last-child{border-bottom:0}.act small{color:var(--mu);white-space:nowrap}.act a.l{white-space:nowrap}
 .note.warn{background:#fffbeb;border-color:#fde68a;color:#92400e}
-.btn.off,.btn.off:hover{opacity:.55;cursor:not-allowed;transform:none;box-shadow:none;background:var(--p)}
 .mbox.sm{max-width:440px;text-align:center}.mbox.sm .ico{width:56px;height:56px;border-radius:50%;background:#fef2f2;color:#dc2626;display:inline-flex;align-items:center;justify-content:center;margin-bottom:6px}.mbox.sm p{color:var(--mu);line-height:1.55}
+.mbox.sm .ico.info{background:#eff6ff;color:#2563eb}
 /* ---------- tracker ---------- */
 .track{display:flex;margin:26px 0 12px}
 .step{flex:1;text-align:center;font-size:12px;color:#94a3b8;position:relative;padding:0 4px}
@@ -170,6 +170,7 @@ html[data-theme="dark"] input,html[data-theme="dark"] select,html[data-theme="da
 html[data-theme="dark"] .note{background:#13203f;border-color:#1e3a8a;color:#bfdbfe}
 html[data-theme="dark"] .note.warn{background:#2e2108;border-color:#78350f;color:#fcd34d}
 html[data-theme="dark"] .mbox.sm .ico{background:#2a1215;color:#f87171}
+html[data-theme="dark"] .mbox.sm .ico.info{background:#172554;color:#93c5fd}
 html[data-theme="dark"] .ownbox{background:#211a3a;border-color:#4c1d95}
 html[data-theme="dark"] th{background:#10172a}html[data-theme="dark"] td{border-color:#1c2439}html[data-theme="dark"] tbody tr:hover{background:#18203a}
 html[data-theme="dark"] .b{background:#1e3a8a66;color:#93c5fd}
