@@ -3,29 +3,35 @@ import {useState,useEffect} from 'react';
 import {TYPES,ENVS,ACCESS_LEVELS,ACCESS_TYPES} from '../lib/constants';
 import {api} from '../lib/api';
 import {chime} from '../lib/sound';
-import {istMin,depOpen,depWhen} from '../lib/deployWindow';
 import {Ic} from '../components/Icon';
 import {Badge,F,ImgPicker} from '../components/ui';
 
-export function DeployClosed({when,close}){
+// Shown after a Deployment Request the server received outside working hours (India time). The ticket is already saved.
+// period "early": 6:00-7:59 AM, "late": after 5:30 PM.
+const TIMING={
+  early:{title:'Request Received – Processing Update',ok:'OK, Got it',text:['Your ticket has been successfully submitted and received by the MLOps team.',
+    "The MLOps team's working hours begin at 8:00 AM. Your deployment request will be reviewed and processing will begin during regular working hours, based on the team's availability and workload.",
+    'Thank you for your patience and understanding.']},
+  late:{title:'Submission Successful – Processing Update',ok:'OK, got it',text:["Today's ticket submission time (8:00 AM – 5:30 PM) has ended. However, your ticket has been successfully submitted and received by the MLOps team.",
+    "If the MLOps team is available, your deployment request may be processed today. Otherwise, it will be reviewed and processed tomorrow based on the team's availability and workload.",
+    'Thank you for your understanding.']}};
+export function TimingNotice({period,close}){
+  const t=TIMING[period];
   useEffect(()=>{const k=e=>{if(e.key==='Escape')close()};addEventListener('keydown',k);return()=>removeEventListener('keydown',k)},[]);
-  return <div className="modal" onClick={e=>{if(e.target===e.currentTarget)close()}}><div className="mbox sm" role="alertdialog" aria-modal="true" aria-labelledby="dc-t">
-    <div className="ico"><Ic n="clock" s={28}/></div><h3 id="dc-t" style={{margin:'6px 0'}}>Deployment Request Closed</h3>
-    {when==='tomorrow'?<p>Today's ticket request time is over.<br/>You can try tomorrow between 8:00 AM and 5:30 PM.</p>
-      :<p>Ticket requests have not opened yet.<br/>You can try today between 8:00 AM and 5:30 PM.</p>}
-    <button className="btn" onClick={close} autoFocus>OK, got it</button></div></div>;
+  return <div className="modal" onClick={e=>{if(e.target===e.currentTarget)close()}}><div className="mbox sm" role="alertdialog" aria-modal="true" aria-labelledby="ah-t">
+    <div className="ico info"><Ic n="clock" s={28}/></div><h3 id="ah-t" style={{margin:'6px 0'}}>{t.title}</h3>
+    {t.text.map((x,i)=><p key={i}>{x}</p>)}
+    <button className="btn" onClick={close} autoFocus>{t.ok}</button></div></div>;
 }
 export function Raise({go,flash}){
   const [f,setF]=useState({title:'',description:'',type:TYPES[0],env:'Production',repo:'',branch:'',pr_url:''}),[busy,setBusy]=useState(false);
-  const [skew,setSkew]=useState(null),[,setTick]=useState(0),[pop,setPop]=useState(false);
-  const syncClock=()=>api('/deploy-window').then(w=>setSkew(w.now_ms-Date.now())).catch(()=>{});
-  useEffect(()=>{syncClock();const i=setInterval(()=>setTick(x=>x+1),15000);return()=>clearInterval(i)},[]);
-  const isDep=f.type==='Deployment Request',nowM=skew===null?null:istMin(Date.now()+skew),closed=isDep&&nowM!==null&&!depOpen(nowM);
+  const [notice,setNotice]=useState(null);  // {rid, period} of a ticket submitted outside working hours, while its popup is open
   const [imgs,setImgs]=useState([]),[ac,setAc]=useState({type:'Git Repository',resource:'',level:'Read only',for:'',until:''});
   const u=k=>e=>setF({...f,[k]:e.target.value}),ua=k=>e=>setAc({...ac,[k]:e.target.value});
   const isAcc=f.type==='Access Request',isOther=f.type==='Other',shots=isOther,[resLabel,resHint]=ACCESS_TYPES[ac.type];
-  const submit=async e=>{e.preventDefault();if(closed){setPop(true);return}setBusy(true);try{const r=await api('/requests','POST',{...f,images:shots?imgs:[],access:isAcc?ac:{}});chime();go('submitted',r.rid)}
-    catch(x){setBusy(false);if(/^Deployment Request closed/.test(x.message)){syncClock();setPop(true)}else flash(x.message)}};
+  const submit=async e=>{e.preventDefault();setBusy(true);try{const r=await api('/requests','POST',{...f,images:shots?imgs:[],access:isAcc?ac:{}});chime();
+      if(TIMING[r.period])setNotice({rid:r.rid,period:r.period});else go('submitted',r.rid)}
+    catch(x){setBusy(false);flash(x.message)}};
   return <div className="card" style={{maxWidth:820}}><h2>Raise Request</h2><p className="sub">Fill in the details. The admin will assign an owner.</p><form onSubmit={submit}>
     <F l="Request Title" value={f.title} onChange={u('title')} required maxLength="200" placeholder={isAcc?'Access to the ml-model-service repository':'Deploy model-service'}/>
     <label>{isAcc?'Why do you need this access?':'Description'}<textarea rows="4" value={f.description} onChange={u('description')} required
@@ -42,9 +48,8 @@ export function Raise({go,flash}){
         pattern="[\w][\w.\/\-]*" title="Letters, numbers and _ . / - only (no spaces)"/>}
       <F l="Pull Request URL" type="url" required value={f.pr_url} onChange={u('pr_url')} placeholder="https://github.com/.../pull/245"/></>}
     {shots&&<ImgPicker imgs={imgs} set={setImgs} flash={flash}/>}
-    {closed?<button type="button" className="btn off" aria-disabled="true" title="Deployment requests are closed now" onClick={()=>setPop(true)}>Submit Request</button>
-      :<button className="btn" disabled={busy}>Submit Request</button>}</form>
-    {pop&&<DeployClosed when={depWhen(nowM===null?istMin(Date.now()):nowM)} close={()=>setPop(false)}/>}</div>;
+    <button className="btn" disabled={busy}>Submit Request</button></form>
+    {notice&&<TimingNotice period={notice.period} close={()=>go('submitted',notice.rid)}/>}</div>;
 }
 export function Submitted({rid,go}){
   return <div className="card" style={{maxWidth:520,margin:'30px auto',textAlign:'center'}}><div className="ok"><Ic n="check" s={44}/></div>

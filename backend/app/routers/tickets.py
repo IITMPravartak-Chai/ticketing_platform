@@ -12,7 +12,7 @@ from ..schemas import ReqIn, CmtIn, AsgIn, HoldIn, CloseIn, FailIn, ResubmitIn
 from ..security import user, admin, resolver
 from ..services.tickets import (fetch, get_ticket, lock, must_own, hist, audit, link, ticket_text, listing,
                                 parse_images, parse_pdfs, parse_access, parse_deployment, SHOT_TYPES)
-from ..utils import deploy_window, deploy_closed_msg, clean_email, email_list, name_from, fmt
+from ..utils import deploy_window, clean_email, email_list, name_from, fmt
 
 router = APIRouter()
 
@@ -65,15 +65,15 @@ def pdf_file(rid: str, fid: int, u=Depends(user)):
     return {"name": x["name"], "src": "data:application/pdf;base64," + base64.b64encode(x["data"]).decode()}
 
 
-@router.get("/api/deploy-window")
-def deploy_window_api(u=Depends(user)): return deploy_window()  # the Raise Request form shows Open / Closed from this
 @router.post("/api/requests")
 def create(b: ReqIn, u=Depends(user)):
-    if b.type == "Deployment Request":  # checked first and on the server, so Postman / curl cannot get round it
-        w = deploy_window()
-        if not w["open"]:
-            log.info("Deployment Request from %s refused at %s IST (outside 08:00-17:30)", u["email"], w["now"])
-            raise HTTPException(403, deploy_closed_msg(w))
+    # Deployment Requests are accepted at any time. One sent 06:00-07:59 ("early") or after 17:30 ("late") India time
+    # (server clock) is flagged, so the requester sees the matching popup and the team sees it in the history and email.
+    w = deploy_window()
+    period = w["period"] if b.type == "Deployment Request" else ""
+    after_hours = period == "late"
+    note = {"early": ("submitted before 8:00 AM, before deployment hours", "Submitted before 8:00 AM (before the 8:00 AM - 5:30 PM deployment hours)."),
+            "late": ("submitted after 5:30 PM, outside deployment hours", "Submitted after 5:30 PM (outside the 8:00 AM - 5:30 PM deployment hours).")}.get(period)
     title, desc, repo, pr, branch = b.title.strip(), b.description.strip(), b.repo.strip(), b.pr_url.strip(), b.branch.strip()
     if not title or not desc: raise HTTPException(400, "Title and description are required")
     if len(title) > 200: raise HTTPException(400, "Title must be 200 characters or fewer")
@@ -100,11 +100,14 @@ def create(b: ReqIn, u=Depends(user)):
         for name, mime, data in images:
             c.execute("insert into ticket_images(ticket_id,name,mime,data) values(%s,%s,%s,%s)", (t["id"], name, mime, data))
         hist(c, t["id"], "CREATED", u["id"], f"Created by {u['name']} <{u['email']}>"
-             + (f" with {len(images)} screenshot(s)" if images else ""), None, "NEW")
+             + (f" with {len(images)} screenshot(s)" if images else "")
+             + (f" ({note[0]})" if note else ""), None, "NEW")
+    if note: log.info("Deployment Request %s from %s %s, at %s IST", t["rid"], u["email"], note[0], w["now"])
     t = fetch(t["rid"])
+    when = note[1] + "\n" if note else ""
     for e in admin_emails():
-        notify(e, t["id"], f"New ticket {t['rid']} is waiting to be assigned.\n\n{ticket_text(t)}", f"[{t['rid']}] New ticket: {title}")
-    return {"rid": t["rid"], "status": "NEW"}
+        notify(e, t["id"], f"New ticket {t['rid']} is waiting to be assigned.\n{when}\n{ticket_text(t)}", f"[{t['rid']}] New ticket: {title}")
+    return {"rid": t["rid"], "status": "NEW", "period": period, "after_hours": after_hours}
 @router.post("/api/requests/{rid}/comments")
 def comment(rid: str, b: CmtIn, u=Depends(user)):
     t = get_ticket(rid, u); body = b.body.strip()
@@ -124,7 +127,8 @@ def _assign(rid, u, email, cc):
     with tx() as c:
         cur = lock(c, t)
         if cur["status"] == "CLOSED": raise HTTPException(400, "Ticket is already closed")
-        tgt = c.execute("select id,name,email,role from users where email=%s for update", (e,)).fetchone()
+        tgt = c.execute("select id,name,email,role,deleted_at from users where email=%s for update", (e,)).fetchone()
+        if tgt and tgt["deleted_at"]: raise HTTPException(400, f"{e} belongs to a deleted account and cannot own tickets")
         if not tgt:  # person without an account: create an invited engineer they can activate with "Create account"
             tgt = c.execute("insert into users(name,email,role) values(%s,%s,'engineer') returning id,name,email,role", (name_from(e), e)).fetchone()
             audit(c, u["id"], "USER_INVITED", e, f"Invited as engineer when {rid} was assigned")
@@ -133,14 +137,17 @@ def _assign(rid, u, email, cc):
             audit(c, u["id"], "ROLE_CHANGED", e, f"user -> engineer (assigned {rid})")
         if cur["assignee_id"] == tgt["id"]: raise HTTPException(400, f"{rid} is already owned by {e}")
         self_take = tgt["id"] == u["id"]
-        c.execute("""update tickets set assignee_id=%s, ownership=%s, assigned_by=%s, assigned_at=now(), cc=%s, status='ASSIGNED',
-                     updated_at=now() where id=%s""", (tgt["id"], "owned" if self_take else "assigned", u["id"], ",".join(cc_list), t["id"]))
+        # A deployment waiting for a bug fix stays ON HOLD with its new owner; Resubmit for Redeployment moves it on
+        waiting = c.execute("select 1 from deploy_bugs where ticket_id=%s and fixed_at is null", (t["id"],)).fetchone()
+        to = "ON HOLD" if waiting else "ASSIGNED"
+        c.execute("""update tickets set assignee_id=%s, ownership=%s, assigned_by=%s, assigned_at=now(), cc=%s, status=%s,
+                     updated_at=now() where id=%s""", (tgt["id"], "owned" if self_take else "assigned", u["id"], ",".join(cc_list), to, t["id"]))
         detail = (f"{u['name']} <{u['email']}> took ownership" if self_take else
                   f"Assigned to {tgt['name']} <{e}> by {u['name']}")
         if t["assignee_id"]: detail += f" (previous owner: {t['aname']} <{t['aemail']}>)"
         if cc_list: detail += "; also notified " + ", ".join(cc_list)
         action = "OWNERSHIP_TAKEN" if self_take else ("REASSIGNED" if cur["assignee_id"] else "ASSIGNED")
-        hist(c, t["id"], action, u["id"], detail, cur["status"], "ASSIGNED")
+        hist(c, t["id"], action, u["id"], detail, cur["status"], to)
     old, t = t["aemail"], fetch(rid)
     err = None
     if not self_take:
@@ -168,7 +175,9 @@ def _transition(rid, u, allowed, to, detail):
     if t["remail"] != u["email"]: notify(t["remail"], t["id"], f"{rid} is now {to}: {detail}", f"[{rid}] Status: {to}")
     return {"status": to}
 @router.post("/api/requests/{rid}/start")
-def start(rid: str, u=Depends(user)): return _transition(rid, u, ["ASSIGNED"], "IN PROGRESS", f"Work started by {u['name']}")
+def start(rid: str, u=Depends(user)):
+    if get_ticket(rid, u)["fix_open"]: raise HTTPException(400, "This deployment is waiting for a bug fix. Use Resubmit for Redeployment once it is fixed.")
+    return _transition(rid, u, ["ASSIGNED"], "IN PROGRESS", f"Work started by {u['name']}")
 @router.post("/api/requests/{rid}/hold")
 def hold(rid: str, b: HoldIn, u=Depends(user)):
     if not b.reason.strip(): raise HTTPException(400, "Give a reason for putting the ticket on hold")

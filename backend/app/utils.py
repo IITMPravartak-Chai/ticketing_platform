@@ -2,19 +2,17 @@
 import re
 from datetime import datetime
 from fastapi import HTTPException
-from .config import IST, DEPLOY_OPEN, DEPLOY_CLOSE, EMAIL_RE
+from .config import IST, DEPLOY_OPEN, DEPLOY_CLOSE, EARLY_OPEN, EMAIL_RE
 
 def ist_now(): return datetime.now(IST)
 def deploy_window(now=None):
     now = (now or ist_now()).astimezone(IST); hm = (now.hour, now.minute)
     is_open = DEPLOY_OPEN <= hm <= DEPLOY_CLOSE
     when = "" if is_open else "today" if hm < DEPLOY_OPEN else "tomorrow"  # before 08:00 it opens later today
-    return {"open": is_open, "reopens": when, "opens": "8:00 AM", "closes": "5:30 PM", "tz": "Asia/Kolkata",
+    # "early": 06:00-07:59, "late": after 17:30; the Raise Request form shows a matching popup after saving
+    period = "early" if EARLY_OPEN <= hm < DEPLOY_OPEN else "late" if hm > DEPLOY_CLOSE else ""
+    return {"open": is_open, "reopens": when, "period": period, "opens": "8:00 AM", "closes": "5:30 PM", "tz": "Asia/Kolkata",
             "now": now.isoformat(timespec="seconds"), "now_ms": int(now.timestamp() * 1000)}
-def deploy_closed_msg(w):
-    return "Deployment Request closed. " + (  # same wording as the popup
-        "Today's ticket request time is over. You can try tomorrow between 8:00 AM and 5:30 PM." if w["reopens"] == "tomorrow"
-        else "Ticket requests have not opened yet. You can try today between 8:00 AM and 5:30 PM.")
 
 def fmt(d): return d.astimezone().strftime("%b %d, %Y %I:%M %p")
 def clean_email(e):
