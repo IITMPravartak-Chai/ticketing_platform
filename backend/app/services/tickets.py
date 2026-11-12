@@ -2,19 +2,19 @@
 import base64
 from datetime import datetime
 from fastapi import HTTPException
-from ..config import (APP_URL, STAT, ACCESS_TYPES, ACCESS_LEVELS, DEP_TYPES, DEP_ENVS, URL_RE, HOST_RE, COMMIT_RE)
+from ..config import (APP_URL, STAT, ADMIN_VIEW, ACCESS_TYPES, ACCESS_LEVELS, DEP_TYPES, DEP_ENVS, URL_RE, HOST_RE, COMMIT_RE)
 from ..db import q
 
 SEL = """select t.*, r.name rname, r.email remail, a.name aname, a.email aemail, ab.name assigned_by_name,
     res.deploy_status, res.deployed_at, res.notes deploy_notes, res.issues, res.resolution, res.deploy_url, res.version,
-    res.environment res_env, res.closed_at, cb.name closed_by_name, cb.email closed_by_email,
+    res.environment res_env, res.server_type, res.closed_at, cb.name closed_by_name, cb.email closed_by_email,
     exists(select 1 from deploy_bugs db where db.ticket_id=t.id and db.fixed_at is null) fix_open
   from tickets t join users r on r.id=t.requester_id left join users a on a.id=t.assignee_id
   left join users ab on ab.id=t.assigned_by left join ticket_resolutions res on res.ticket_id=t.id
   left join users cb on cb.id=res.closed_by"""
 def fetch(rid): return q(SEL + " where t.rid=%s", (rid,), True)
 def can_view(t, u):
-    return (u["role"] == "admin" or t["requester_id"] == u["id"] or t["assignee_id"] == u["id"]
+    return (u["role"] in ADMIN_VIEW or t["requester_id"] == u["id"] or t["assignee_id"] == u["id"]
             or u["email"] in (t["access"] or {}).get("for", "").split(","))  # the people an access request is for
 def get_ticket(rid, u):
     t = fetch(rid)

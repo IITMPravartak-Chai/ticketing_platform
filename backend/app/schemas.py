@@ -21,4 +21,5 @@ class CloseIn(BaseModel):
     deploy_status: str; deployed_at: str; notes: str; issues: str = ""; resolution: str; deploy_url: str
     version: str = ""; env: str = "Production"
     vpn_user: str = ""; vpn_password: str = ""; api_key: str = ""; files: list[dict] = []
+    server_type: str = ""  # On-Premises or "Cloud, AWS": required to close any ticket
     deployment: dict = {}; idem: str = ""  # Deployment Request only: the deployment details form + its one-time key  # files: PDFs [{name, data: "data:application/pdf;base64,..."}]

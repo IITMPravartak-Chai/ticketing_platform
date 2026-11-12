@@ -1,7 +1,7 @@
 """Dashboard numbers for users, MLOps Engineers and admins."""
 import time
 from fastapi import APIRouter, Depends
-from ..config import ROLES
+from ..config import ROLES, ADMIN_VIEW
 from ..db import q
 from ..security import user
 from ..services.tickets import status_counts, count, FIX_OPEN, LAST_COMMENTER
@@ -20,7 +20,7 @@ def dashboard(u=Depends(user)):
         d["closed_by_me"] = q("""select count(*) total, count(*) filter (where r.closed_at >= now() - interval '7 days') week,
                                     extract(epoch from avg(r.closed_at - t.created_at)) avg_s
                                  from ticket_resolutions r join tickets t on t.id=r.ticket_id where r.closed_by=%s""", (uid,), True)
-    if u["role"] == "admin":
+    if u["role"] in ADMIN_VIEW:
         d["all"] = status_counts()
         d["kpi"] = q("""select (select count(*) from tickets where created_at >= now() - interval '7 days') created_7d,
                 (select count(*) from ticket_resolutions where closed_at >= now() - interval '7 days') closed_7d,

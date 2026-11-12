@@ -1,6 +1,6 @@
 // App frame: left sidebar, top bar and profile menu.
 import {useState,useEffect,useRef} from 'react';
-import {ROLE_NAME} from '../lib/constants';
+import {ROLE_NAME,READ_ONLY,adminView} from '../lib/constants';
 import {soundOn,chime} from '../lib/sound';
 import {Ic} from '../components/Icon';
 import {Badge} from '../components/ui';
@@ -11,9 +11,9 @@ export function Shell({me,page,go,logout,children}){
   useEffect(()=>{if(!pm)return;const h=e=>{if(pfRef.current&&!pfRef.current.contains(e.target))setPm(false)},k=e=>{if(e.key==='Escape')setPm(false)};
     document.addEventListener('mousedown',h);document.addEventListener('keydown',k);return()=>{document.removeEventListener('mousedown',h);document.removeEventListener('keydown',k)}},[pm]);
   const toggleSnd=()=>{const v=!snd;setSnd(v);try{localStorage.setItem('sound',v?'on':'off')}catch{}if(v)chime(true)};
-  const isA=me.role==='admin';
+  const isA=adminView(me.role),ro=me.role===READ_ONLY;
   const nav=[['dashboard','dash','Dashboard'],
-    ...(isA?[['queue','queue','All Tickets'],['assigned','user','My Owned Tickets'],['users','users','Users & Roles']]
+    ...(isA?[['queue','queue','All Tickets'],...(ro?[]:[['assigned','user','My Owned Tickets']]),['users','users','Users & Roles']]
     :me.role==='engineer'?[['assigned','user','Assigned to Me'],['raise','plus','Raise Request'],['my','list','My Requests']]
     :[['raise','plus','Raise Request'],['my','list','My Requests']]),
     ['notifs','bell','Notifications'],...(isA?[['deployments','server','Deployment Details']]:[])];
@@ -29,6 +29,7 @@ export function Shell({me,page,go,logout,children}){
         {k==='notifs'&&me.unread>0&&<span className="cnt">{me.unread}</span>}</div>)}</div>
     </aside>
     <div className="main"><div className="top"><button className="burger" onClick={()=>setOpen(true)}><Ic n="menu"/></button><h1>{titles[page.n]||''}</h1>
+      {ro&&<span className="ro" title="You can view everything, but you cannot make changes"><Ic n="eye" s={14}/>Read Only</span>}
       <button className="btn ghost" style={{marginLeft:'auto',padding:'8px 12px'}} onClick={toggleSnd} title={snd?'Turn off the notification sound':'Turn on the notification sound'}><Ic n={snd?'vol':'mute'} s={18}/><span className="sndt">{snd?'Notification on':'Notification off'}</span></button>
       <div className="pf" ref={pfRef}><button className="pfbtn" onClick={()=>setPm(!pm)} aria-haspopup="menu" aria-expanded={pm} title={`${me.name} (${ROLE_NAME[me.role]})`}>
         <span className="av sm">{ini}</span><span className="pfn"><b>{me.name}</b><small>{ROLE_NAME[me.role]}</small></span></button>

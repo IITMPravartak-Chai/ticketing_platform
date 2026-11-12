@@ -4,7 +4,7 @@ import {TRACK,LABEL} from '../../lib/constants';
 import {api} from '../../lib/api';
 import {dur} from '../../lib/format';
 import {Ic} from '../../components/Icon';
-import {Badge,F,Row,Url} from '../../components/ui';
+import {Badge,F,Lbl,Row,Url} from '../../components/ui';
 import {DeploymentModal} from '../../components/DeploymentModal';
 
 export function Secret({v,show}){
@@ -32,7 +32,7 @@ export function Resubmit({r,act}){
   const submit=async e=>{e.preventDefault();setBusy(true);await act('/resubmit',f,'Resubmitted. The owner has been asked to redeploy.');setBusy(false)};
   return <form className="section" onSubmit={submit} style={{maxWidth:720}}><h3>Fix the Bugs and Resubmit</h3>
     <p className="sub">Review the bugs and screenshots above, fix them, then resubmit. The deployment goes back to {r.aname||'the owner'} to redeploy.</p>
-    <label>What was fixed? *<textarea rows="3" required value={f.fix_notes} onChange={u('fix_notes')} placeholder="Added scikit-learn to requirements.txt and validated empty input"/></label>
+    <label><Lbl t="What was fixed?" req/><textarea rows="3" required value={f.fix_notes} onChange={u('fix_notes')} placeholder="Added scikit-learn to requirements.txt and validated empty input"/></label>
     {r.type==='Deployment Request'&&<div className="row2"><F l="Branch to Deploy" value={f.branch} onChange={u('branch')} placeholder="hotfix/v2.4.2" maxLength="200"
       pattern="[\w][\w.\/\-]*" title="Letters, numbers and _ . / - only (no spaces)"/>
       <F l="Pull Request URL" type="url" value={f.pr_url} onChange={u('pr_url')} placeholder="https://github.com/.../pull/246"/></div>}
@@ -41,7 +41,7 @@ export function Resubmit({r,act}){
 export function Closure({r}){
   if(r.access)return <div className="done-box"><b>Closure Details</b><table className="kv"><tbody>
     <Row k="Closed By">{r.closed_by_name?`${r.closed_by_name} <${r.closed_by_email}>`:'-'}</Row><Row k="Closed At">{r.closed_at||'-'}</Row>
-    <Row k="Result"><b>{r.deploy_status||'-'}</b></Row>{r.access.type==='Model Endpoint'&&r.deploy_status!=='Rejected'?null:<Row k={r.deploy_status==='Rejected'?'Reason':'Access Given'}>{r.deploy_notes||'-'}</Row>}
+    <Row k="Result"><b>{r.deploy_status||'-'}</b></Row><Row k="Server Type">{r.server_type||'-'}</Row>{r.access.type==='Model Endpoint'&&r.deploy_status!=='Rejected'?null:<Row k={r.deploy_status==='Rejected'?'Reason':'Access Given'}>{r.deploy_notes||'-'}</Row>}
     {r.resolution?<Row k="Resolution / Instructions">{r.resolution}</Row>:null}{r.deploy_url?<Row k={r.access.type==='Model Endpoint'?'Model Endpoint URL':'Link'}><Url u={r.deploy_url}/></Row>:null}
     {r.creds?.vpn_user&&<><Row k="VPN Username"><Secret v={r.creds.vpn_user} show/></Row><Row k="VPN Password"><Secret v={r.creds.vpn_password}/></Row></>}
     {r.creds?.api_key&&<Row k="API Key / Token"><Secret v={r.creds.api_key}/></Row>}
@@ -49,7 +49,7 @@ export function Closure({r}){
   return <div className="done-box"><b>Closure Details</b><table className="kv"><tbody>
     <Row k="Closed By">{r.closed_by_name?`${r.closed_by_name} <${r.closed_by_email}>`:'-'}</Row><Row k="Closed At">{r.closed_at||'-'}</Row>
     <Row k="Deployment Status"><b>{r.deploy_status||'-'}</b></Row><Row k="Deployed At">{r.deployed_at||'-'}</Row><Row k="Deployment URL"><Url u={r.deploy_url}/></Row>
-    <Row k="Version">{r.version||'-'}</Row><Row k="Environment">{r.res_env||'-'}</Row>
+    <Row k="Version">{r.version||'-'}</Row><Row k="Environment">{r.res_env||'-'}</Row><Row k="Server Type">{r.server_type||'-'}</Row>
     {r.deploy_notes?<Row k="Deployment Notes">{r.deploy_notes}</Row>:null}{r.issues&&r.issues!=='None'?<Row k="Issues Encountered">{r.issues}</Row>:null}
     {r.resolution?<Row k="Resolution">{r.resolution}</Row>:null}
   </tbody></table></div>;

@@ -2,21 +2,21 @@
 import os
 import psycopg
 from fastapi import APIRouter, HTTPException, Depends
-from ..bootstrap import configured_admin_emails
-from ..config import ROLES, DELETED_DOMAIN
+from ..bootstrap import configured_admin_emails, configured_readonly_admins
+from ..config import ROLES, READ_ONLY, DELETED_DOMAIN
 from ..db import q, tx
 from ..schemas import RoleIn
-from ..security import admin
+from ..security import admin, admin_view
 from ..services.tickets import audit
 from ..utils import email_list, name_from
 
 router = APIRouter()
 
 @router.get("/api/users")
-def users(u=Depends(admin)):
+def users(u=Depends(admin_view)):
     return q("""select u.id, u.name, u.email, u.role, (u.pw_hash is not null) active, u.created_at,
                   (select count(*) from tickets t where t.assignee_id=u.id and t.status<>'CLOSED') owned_open
-                from users u where u.deleted_at is null order by array_position(array['admin','engineer','user'], u.role), u.name""")
+                from users u where u.deleted_at is null order by array_position(array['admin','admin_read_only','engineer','user'], u.role), u.name""")
 
 @router.get("/api/team")
 def team(u=Depends(admin)):
@@ -34,7 +34,9 @@ def set_role(uid: int, b: RoleIn, u=Depends(admin)):
         if x["role"] == b.role: return {"ok": True}
         if b.role != "admin" and x["email"] in configured_admin_emails():
             raise HTTPException(400, f"{x['email']} is listed in ADMIN_EMAILS, so it would become an admin again on the next restart. Remove it from .env first.")
-        if b.role == "user":
+        if b.role != READ_ONLY and x["email"] in {e for _, e, _ in configured_readonly_admins()}:
+            raise HTTPException(400, f"{x['email']} is configured as a read-only admin in .env, so it would become one again on the next restart. Remove it from .env first.")
+        if b.role in ("user", READ_ONLY):
             n = c.execute("select count(*) c from tickets where assignee_id=%s and status<>'CLOSED'", (uid,)).fetchone()["c"]
             if n: raise HTTPException(400, f"{x['email']} still owns {n} open ticket(s). Reassign them first.")
         c.execute("update users set role=%s, updated_at=now() where id=%s", (b.role, uid))
@@ -51,6 +53,8 @@ def delete_user(uid: int, u=Depends(admin)):
         if not x: raise HTTPException(404, "User not found")
         if x["email"] in configured_admin_emails():
             raise HTTPException(400, f"{x['email']} is listed in ADMIN_EMAILS, so it would be created again on the next restart. Remove it from .env first.")
+        if x["email"] in {e for _, e, _ in configured_readonly_admins()}:
+            raise HTTPException(400, f"{x['email']} is configured as a read-only admin in .env, so it would be created again on the next restart. Remove it from .env first.")
         n = c.execute("select count(*) c from tickets where assignee_id=%s and status<>'CLOSED'", (uid,)).fetchone()["c"]
         if n: raise HTTPException(400, f"{x['email']} still owns {n} open ticket(s). Reassign them first.")
         try:

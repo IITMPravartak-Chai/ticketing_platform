@@ -10,7 +10,7 @@ pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=10, open=False, kwargs=
 SCHEMA = """
 create table if not exists users(
   id serial primary key, name text not null, email text not null unique, pw_hash text,
-  role text not null default 'user' check (role in ('user','engineer','admin')),
+  role text not null default 'user' check (role in ('user','engineer','admin','admin_read_only')),
   created_at timestamptz not null default now(), updated_at timestamptz not null default now());
 create table if not exists otps(email text primary key, code text not null, name text, purpose text not null, expires_at timestamptz not null);
 create table if not exists tickets(
@@ -61,6 +61,11 @@ create table if not exists deploy_bugs(  -- a failed deployment's bug report and
 alter table ticket_images add column if not exists bug_id int references deploy_bugs(id) on delete cascade;  -- screenshot of a failed deployment
 create index if not exists ix_deploy_bugs_ticket on deploy_bugs(ticket_id);
 alter table users add column if not exists deleted_at timestamptz;  -- set when an admin deletes an account that still has ticket history
+alter table users drop constraint if exists users_role_check;  -- the role list grew: read-only admins (existing rows all still match)
+alter table users add constraint users_role_check check (role in ('user','engineer','admin','admin_read_only'));
+alter table ticket_resolutions add column if not exists server_type text;  -- chosen on closure; empty for tickets closed before it existed
+alter table ticket_resolutions drop constraint if exists ticket_resolutions_server_type_check;
+alter table ticket_resolutions add constraint ticket_resolutions_server_type_check check (server_type in ('On-Premises','Cloud, AWS'));
 create table if not exists deployment_records(  -- confidential: read only by admins
   id serial primary key, ticket_id int not null unique references tickets(id) on delete cascade,
   deployment_type text not null check (deployment_type in ('Manual','CI/CD')),

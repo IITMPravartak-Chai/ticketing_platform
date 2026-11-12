@@ -1,6 +1,6 @@
 // Dashboards for users, MLOps Engineers and admins.
 import {useState} from 'react';
-import {ROLES,ROLE_NAME,SC} from '../lib/constants';
+import {ROLES,ROLE_NAME,SC,READ_ONLY} from '../lib/constants';
 import {api} from '../lib/api';
 import {fmtDur} from '../lib/format';
 import {useLive} from '../lib/hooks';
@@ -58,11 +58,11 @@ export function AdminDash({me,go}){
       <Stat label="Created (7 days)" value={k.created_7d} icon="plus" color="#4f46e5" bg="#eef2ff"/>
       <Stat label="Closed (7 days)" value={k.closed_7d} icon="check" color="#16a34a" bg="#f0fdf4"/>
       <Stat label="Avg. Time to Close" value={fmtDur(k.avg_resolution_s)} icon="clock" color="#7c3aed" bg="#f3e8ff" sub="All closed tickets"/>
-      <Stat label="My Owned (open)" value={d.owned.OPEN} icon="user" color="#0369a1" bg="#e0f2fe" onClick={()=>go('assigned','ALL')} sub="Tickets you took ownership of"/>
+      {me.role!==READ_ONLY&&<Stat label="My Owned (open)" value={d.owned.OPEN} icon="user" color="#0369a1" bg="#e0f2fe" onClick={()=>go('assigned','ALL')} sub="Tickets you took ownership of"/>}
     </div>
     <div className="cols">
       <div className="card"><CardHead title="Status Breakdown"/><StatusChart c={a} pick={s=>go('queue',s)}/></div>
-      <div className="card"><CardHead title="Users"><button className="btn ghost" onClick={()=>go('users')}>Manage</button></CardHead>
+      <div className="card"><CardHead title="Users"><button className="btn ghost" onClick={()=>go('users')}>{me.role===READ_ONLY?'View':'Manage'}</button></CardHead>
         <table className="kv"><tbody>{ROLES.map(r=><Row key={r} k={ROLE_NAME[r]+'s'}>{d.users[r]}</Row>)}<Row k="Invited (not signed up)">{d.users.invited}</Row></tbody></table></div>
     </div>
     <div className="card"><CardHead title="Team Workload"><span className="sub" style={{margin:0}}>Open tickets each person owns, and tickets they have closed</span></CardHead>

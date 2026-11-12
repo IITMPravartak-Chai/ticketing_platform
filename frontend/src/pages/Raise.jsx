@@ -1,10 +1,10 @@
 // Raise Request form and its confirmation page.
-import {useState,useEffect} from 'react';
+import {useState,useEffect,useRef} from 'react';
 import {TYPES,ENVS,ACCESS_LEVELS,ACCESS_TYPES} from '../lib/constants';
 import {api} from '../lib/api';
 import {chime} from '../lib/sound';
 import {Ic} from '../components/Icon';
-import {Badge,F,ImgPicker} from '../components/ui';
+import {Badge,F,Lbl,ImgPicker} from '../components/ui';
 
 // Shown after a Deployment Request the server received outside working hours (India time). The ticket is already saved.
 // period "early": 6:00-7:59 AM, "late": after 5:30 PM.
@@ -23,26 +23,41 @@ export function TimingNotice({period,close}){
     {t.text.map((x,i)=><p key={i}>{x}</p>)}
     <button className="btn" onClick={close} autoFocus>{t.ok}</button></div></div>;
 }
-export function Raise({go,flash}){
-  const [f,setF]=useState({title:'',description:'',type:TYPES[0],env:'Production',repo:'',branch:'',pr_url:''}),[busy,setBusy]=useState(false);
+const EMPTY_F={title:'',description:'',type:TYPES[0],env:'Production',repo:'',branch:'',pr_url:''};
+const EMPTY_AC={type:'Git Repository',resource:'',level:'Read only',for:'',until:''};
+// A saved draft, or null when there is none (or it can't be read)
+const loadDraft=key=>{try{const d=JSON.parse(localStorage.getItem(key));return d&&d.f&&d.ac?{f:{...EMPTY_F,...d.f},ac:{...EMPTY_AC,...d.ac},at:d.at}:null}catch{return null}};
+export function Raise({go,flash,me}){
+  // Draft: what is typed here is kept in this browser, per signed-in person, until the ticket is submitted or the draft cleared.
+  // Screenshots are not kept (too large for browser storage).
+  const key='raiseDraft:'+me.id,draft=useRef(loadDraft(key)).current;
+  const [f,setF]=useState(draft?.f||EMPTY_F),[busy,setBusy]=useState(false);
   const [notice,setNotice]=useState(null);  // {rid, period} of a ticket submitted outside working hours, while its popup is open
-  const [imgs,setImgs]=useState([]),[ac,setAc]=useState({type:'Git Repository',resource:'',level:'Read only',for:'',until:''});
+  const [imgs,setImgs]=useState([]),[ac,setAc]=useState(draft?.ac||EMPTY_AC),[restored,setRestored]=useState(draft?draft.at:null);
+  useEffect(()=>{try{
+    if([f.title,f.description,f.repo,f.branch,f.pr_url,ac.resource].some(x=>x.trim()))localStorage.setItem(key,JSON.stringify({f,ac,at:Date.now()}));
+    else localStorage.removeItem(key)}catch{}},[f,ac]);
+  const clearDraft=()=>{try{localStorage.removeItem(key)}catch{}setF(EMPTY_F);setAc(EMPTY_AC);setImgs([]);setRestored(null)};
   const u=k=>e=>setF({...f,[k]:e.target.value}),ua=k=>e=>setAc({...ac,[k]:e.target.value});
   const isAcc=f.type==='Access Request',isOther=f.type==='Other',shots=isOther,[resLabel,resHint]=ACCESS_TYPES[ac.type];
   const submit=async e=>{e.preventDefault();setBusy(true);try{const r=await api('/requests','POST',{...f,images:shots?imgs:[],access:isAcc?ac:{}});chime();
+      try{localStorage.removeItem(key)}catch{}  // submitted: the draft is no longer needed
       if(TIMING[r.period])setNotice({rid:r.rid,period:r.period});else go('submitted',r.rid)}
     catch(x){setBusy(false);flash(x.message)}};
-  return <div className="card" style={{maxWidth:820}}><h2>Raise Request</h2><p className="sub">Fill in the details. The admin will assign an owner.</p><form onSubmit={submit}>
+  return <div className="card" style={{maxWidth:820}}><h2>Raise Request</h2><p className="sub">Fill in the details. The admin will assign an owner. What you type is saved as a draft in this browser until you submit.</p>
+    {restored&&<div className="note" style={{marginTop:0,marginBottom:16,display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
+      <span style={{flex:1}}>Draft restored from {new Date(restored).toLocaleString()}. Screenshots are not saved in drafts.</span>
+      <button type="button" className="btn ghost sm" onClick={clearDraft}>Clear draft</button></div>}<form onSubmit={submit}>
     <F l="Request Title" value={f.title} onChange={u('title')} required maxLength="200" placeholder={isAcc?'Access to the ml-model-service repository':'Deploy model-service'}/>
-    <label>{isAcc?'Why do you need this access?':'Description'}<textarea rows="4" value={f.description} onChange={u('description')} required
+    <label><Lbl t={isAcc?'Why do you need this access?':'Description'} req/><textarea rows="4" value={f.description} onChange={u('description')} required
       placeholder={isAcc?'I need to push fixes to the model-service repository.':'Please deploy the model-service to production.'}/></label>
-    <div className="row2"><label>Request Type<select value={f.type} onChange={u('type')}>{TYPES.map(t=><option key={t}>{t}</option>)}</select></label>
-    <label>Environment<select value={f.env} onChange={u('env')}>{ENVS.map(t=><option key={t}>{t}</option>)}</select></label></div>
-    {isAcc&&<label>Access To<select value={ac.type} onChange={ua('type')}>{Object.keys(ACCESS_TYPES).map(t=><option key={t}>{t}</option>)}</select></label>}
+    <div className="row2"><label><Lbl t="Request Type" req/><select required value={f.type} onChange={u('type')}>{TYPES.map(t=><option key={t}>{t}</option>)}</select></label>
+    <label><Lbl t="Environment" req/><select required value={f.env} onChange={u('env')}>{ENVS.map(t=><option key={t}>{t}</option>)}</select></label></div>
+    {isAcc&&<label><Lbl t="Access To" req/><select required value={ac.type} onChange={ua('type')}>{Object.keys(ACCESS_TYPES).map(t=><option key={t}>{t}</option>)}</select></label>}
     {!isAcc&&!isOther&&<F l="Repository URL" type="url" required value={f.repo} onChange={u('repo')} placeholder="https://github.com/org/ml-model-service"/>}
     {isAcc?<>
       {ac.type!=='Model Endpoint'&&<F l={resLabel} required value={ac.resource} onChange={ua('resource')} placeholder={resHint} maxLength="300"/>}
-      {ac.type==='Git Repository'&&<label>Access Level<select value={ac.level} onChange={ua('level')}>{ACCESS_LEVELS.map(t=><option key={t}>{t}</option>)}</select></label>}</>
+      {ac.type==='Git Repository'&&<label><Lbl t="Access Level" req/><select required value={ac.level} onChange={ua('level')}>{ACCESS_LEVELS.map(t=><option key={t}>{t}</option>)}</select></label>}</>
     :!isOther&&<>
       {f.type==='Deployment Request'&&<F l="Branch Name" required value={f.branch} onChange={u('branch')} placeholder="release/v2.4" maxLength="200"
         pattern="[\w][\w.\/\-]*" title="Letters, numbers and _ . / - only (no spaces)"/>}

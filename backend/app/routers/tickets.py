@@ -5,11 +5,11 @@ from datetime import datetime
 import psycopg
 from psycopg.types.json import Jsonb
 from fastapi import APIRouter, HTTPException, Depends
-from ..config import (TYPES, ENVS, ACTIVE, DEPLOY_STATUSES, ACCESS_STATUSES, DEP_ENVS, URL_RE, BRANCH_RE, log)
+from ..config import (READ_ONLY, ADMIN_VIEW, SERVER_TYPES, TYPES, ENVS, ACTIVE, DEPLOY_STATUSES, ACCESS_STATUSES, DEP_ENVS, URL_RE, BRANCH_RE, log)
 from ..db import q, tx
 from ..mailer import notify, admin_emails
 from ..schemas import ReqIn, CmtIn, AsgIn, HoldIn, CloseIn, FailIn, ResubmitIn
-from ..security import user, admin, resolver
+from ..security import user, admin, admin_view, resolver
 from ..services.tickets import (fetch, get_ticket, lock, must_own, hist, audit, link, ticket_text, listing,
                                 parse_images, parse_pdfs, parse_access, parse_deployment, SHOT_TYPES)
 from ..utils import deploy_window, clean_email, email_list, name_from, fmt
@@ -21,7 +21,7 @@ def my_requests(s: str = "ALL", u=Depends(user)): return listing("t.requester_id
 @router.get("/api/assigned")
 def assigned(s: str = "ALL", u=Depends(resolver)): return listing("t.assignee_id=%s", [u["id"]], s)
 @router.get("/api/queue")
-def queue(s: str = "ALL", u=Depends(admin)): return listing("true", [], s)
+def queue(s: str = "ALL", u=Depends(admin_view)): return listing("true", [], s)
 @router.get("/api/requests/{rid}")
 def detail(rid: str, u=Depends(user)):
     t = get_ticket(rid, u)
@@ -48,8 +48,9 @@ def detail(rid: str, u=Depends(user)):
         elif hold_from is not None and h["to_status"] != "ON HOLD": hold += h["at"] - hold_from; hold_from = None
     now = time.time()
     if hold_from is not None: hold += now - hold_from
+    if u["role"] == READ_ONLY: creds = None  # read-only admins never see VPN passwords or API keys
     return {**t, "history": hist_rows, "comments": cm, "images": imgs, "files": files, "creds": creds, "bugs": bugs,
-            "deployment": q("select id, deployment_type, app_name, environment from deployment_records where ticket_id=%s", (t["id"],), True) if u["role"] == "admin" else None, "ts": ts, "tse": tse, "hold_secs": hold, "now": now,
+            "deployment": q("select id, deployment_type, app_name, environment from deployment_records where ticket_id=%s", (t["id"],), True) if u["role"] in ADMIN_VIEW else None, "ts": ts, "tse": tse, "hold_secs": hold, "now": now,
             "is_owner": t["assignee_id"] == u["id"]}
 @router.get("/api/requests/{rid}/images/{iid}")
 def image(rid: str, iid: int, u=Depends(user)):
@@ -129,6 +130,7 @@ def _assign(rid, u, email, cc):
         if cur["status"] == "CLOSED": raise HTTPException(400, "Ticket is already closed")
         tgt = c.execute("select id,name,email,role,deleted_at from users where email=%s for update", (e,)).fetchone()
         if tgt and tgt["deleted_at"]: raise HTTPException(400, f"{e} belongs to a deleted account and cannot own tickets")
+        if tgt and tgt["role"] == READ_ONLY: raise HTTPException(400, f"{e} is a read-only admin and cannot own tickets")
         if not tgt:  # person without an account: create an invited engineer they can activate with "Create account"
             tgt = c.execute("insert into users(name,email,role) values(%s,%s,'engineer') returning id,name,email,role", (name_from(e), e)).fetchone()
             audit(c, u["id"], "USER_INVITED", e, f"Invited as engineer when {rid} was assigned")
@@ -199,6 +201,7 @@ def close(rid: str, b: CloseIn, u=Depends(user)):
         if not key: raise HTTPException(400, "Missing submission key; reload the page and try again")
         dep = parse_deployment(b.deployment)
         b.deployed_at, b.deploy_url, b.version, b.env, b.notes = dep["deployed_at"].isoformat(), dep["app_url"], dep["version"], dep["environment"], ""
+    if b.server_type not in SERVER_TYPES: raise HTTPException(400, "Please select the Server Type (On-Premises or Cloud, AWS)")
     if b.deploy_status not in (ACCESS_STATUSES if acc else DEPLOY_STATUSES): raise HTTPException(400, "Choose a status")
     if b.env not in (DEP_ENVS if dep else ENVS): raise HTTPException(400, "Choose an environment")
     if t["fix_open"]: raise HTTPException(400, "This deployment is waiting for a bug fix. Resubmit it for redeployment first.")
@@ -219,9 +222,9 @@ def close(rid: str, b: CloseIn, u=Depends(user)):
     with tx() as c:
         cur = lock(c, t); must_own(cur, t, u)
         if cur["status"] not in ACTIVE: raise HTTPException(400, f"This ticket is {cur['status']}, so it cannot be closed")
-        c.execute("""insert into ticket_resolutions(ticket_id,deploy_status,deployed_at,notes,issues,resolution,deploy_url,version,environment,closed_by,vpn_user,vpn_password,api_key)
-                     values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                  (t["id"], b.deploy_status, deployed, b.notes.strip(), issues, b.resolution.strip(), url, b.version.strip(), b.env, u["id"], vuser, vpw, key))
+        c.execute("""insert into ticket_resolutions(ticket_id,deploy_status,deployed_at,notes,issues,resolution,deploy_url,version,environment,closed_by,vpn_user,vpn_password,api_key,server_type)
+                     values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                  (t["id"], b.deploy_status, deployed, b.notes.strip(), issues, b.resolution.strip(), url, b.version.strip(), b.env, u["id"], vuser, vpw, key, b.server_type))
         for name, data in pdfs:
             c.execute("insert into ticket_files(ticket_id,name,data) values(%s,%s,%s)", (t["id"], name, data))
         if dep:  # same transaction as the closure: both are saved, or neither
@@ -239,20 +242,20 @@ def close(rid: str, b: CloseIn, u=Depends(user)):
             audit(c, u["id"], "DEPLOYMENT_RECORDED", rid, f"{dep['deployment_type']} deployment of {dep['app_name']} to {dep['environment']} recorded by {u['name']} ({u['role']})")
         c.execute("update tickets set status='CLOSED', updated_at=now() where id=%s", (t["id"],))
         hist(c, t["id"], "CLOSED", u["id"], f"Closed by {u['name']} <{u['email']}>. "
-             + (f"{b.deploy_status} at {fmt(deployed)}." + (f" {len(pdfs)} PDF(s) attached." if pdfs else "") if acc else f"Deployment {b.deploy_status} at {fmt(deployed)}. URL: {url}"),
-             cur["status"], "CLOSED")
+             + (f"{b.deploy_status} at {fmt(deployed)}." + (f" {len(pdfs)} PDF(s) attached." if pdfs else "") if acc else f"Deployment {b.deploy_status} at {fmt(deployed)}. URL: {url}")
+             + f" Server type: {b.server_type}.", cur["status"], "CLOSED")
     if acc:
         a = t["access"] or {}
         msg = (f"Access request {rid} has been closed by {u['name']} <{u['email']}>.\n\nTitle: {t['title']}\nResult: {b.deploy_status}\n"
                f"Access To: {a.get('type', '-')} - {a.get('resource', '-')}\nAccess Level: {a.get('level') or '-'}\n"
-               f"Access For: {a.get('for', '-')}\nCompleted At: {fmt(deployed)}\n" + (f"{'Model Endpoint URL' if ep else 'Link'}: {url}\n" if url else "")
+               f"Access For: {a.get('for', '-')}\nCompleted At: {fmt(deployed)}\nServer Type: {b.server_type}\n" + (f"{'Model Endpoint URL' if ep else 'Link'}: {url}\n" if url else "")
                + (f"VPN Username: {vuser}\nThe VPN password is not sent by email. Sign in and open the ticket to see it.\n" if vpn else "")
                + ("The API key is not sent by email. Sign in and open the ticket to see it.\n" if key else "")
                + (f"Attached PDFs: {', '.join(n for n, _ in pdfs)} (download them from the ticket)\n" if pdfs else "")
                + f"\nAccess Given:\n{b.notes.strip()}\n\nOpen ticket: {link(rid)}")
     else:
         msg = (f"Ticket {rid} has been closed by {u['name']} <{u['email']}>.\n\nTitle: {t['title']}\nDeployment Status: {b.deploy_status}\n"
-               f"Deployed At: {fmt(deployed)}\nDeployment URL: {url}\nVersion: {b.version.strip() or '-'}   Environment: {b.env}\n"
+               f"Deployed At: {fmt(deployed)}\nDeployment URL: {url}\nVersion: {b.version.strip() or '-'}   Environment: {b.env}\nServer Type: {b.server_type}\n"
                + (f"\nDeployment Notes:\n{b.notes.strip()}\n" if b.notes.strip() else "") + f"\nOpen ticket: {link(rid)}")
     grantees = email_list(t["access"]["for"]) if acc and t["access"] else []  # the people the access is for hear the outcome too
     for e in sorted({t["remail"], *admin_emails(), *email_list(t["cc"]), *grantees} - {None, u["email"]}):
