@@ -2,14 +2,14 @@
 import {useState,useEffect} from 'react';
 import {api} from '../../lib/api';
 import {Ic} from '../../components/Icon';
-import {F} from '../../components/ui';
+import {F,Lbl} from '../../components/ui';
 import {FailModal} from './FailModal';
 
 export function PersonPicker({value,onChange}){
   const [team,setTeam]=useState([]),[other,setOther]=useState(false);
   useEffect(()=>{api('/team').then(setTeam).catch(()=>{})},[]);
   return <>
-    <label>Team member<select required value={other?'*':value} onChange={e=>{const v=e.target.value;setOther(v==='*');onChange(v==='*'?'':v)}}>
+    <label><Lbl t="Team member" req/><select required value={other?'*':value} onChange={e=>{const v=e.target.value;setOther(v==='*');onChange(v==='*'?'':v)}}>
       <option value="" disabled>Select a person</option>
       {team.map(p=><option key={p.email} value={p.email}>{p.name} ({p.email})</option>)}
       <option value="*">Someone else (type their email)</option></select></label>

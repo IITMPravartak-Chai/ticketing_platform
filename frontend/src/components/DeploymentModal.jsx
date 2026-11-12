@@ -17,7 +17,7 @@ export function DeploymentModal({id,close,go}){
     <p className="sub" style={{marginTop:6}}>Ticket <a className="l" onClick={()=>{close();go('detail',d.rid)}}>{d.rid}</a> · {d.title}</p>
     <h4>Application and server</h4><table className="kv"><tbody>
       <Row k="Application Name">{d.app_name}</Row><Row k="Application URL"><Url u={d.app_url}/></Row><Row k="Server Name">{d.server_name}</Row>
-      <Row k="Server IP / Host"><code>{d.server_ip}</code></Row><Row k="Environment">{d.environment}</Row>{d.method?<Row k="Deployment Method">{d.method}</Row>:null}
+      <Row k="Server IP / Host"><code>{d.server_ip}</code></Row><Row k="Server Type">{d.server_type||'-'}</Row><Row k="Environment">{d.environment}</Row>{d.method?<Row k="Deployment Method">{d.method}</Row>:null}
       <Row k="Deployed At">{d.deployed_at}</Row><Row k="Version">{d.version||'-'}</Row></tbody></table>
     {d.deployment_type==='CI/CD'?<><h4>CI/CD pipeline</h4><table className="kv"><tbody>
       {d.cicd_tool?<Row k="CI/CD Tool">{d.cicd_tool}</Row>:null}<Row k="Pipeline Name">{d.pipeline_name}</Row><Row k="Pipeline Run ID"><code>{d.pipeline_run_id}</code></Row>

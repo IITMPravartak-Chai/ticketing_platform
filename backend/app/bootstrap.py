@@ -1,6 +1,6 @@
 """Startup work: connect to PostgreSQL, apply the schema, and create the admins and users listed in .env."""
 import os, re
-from .config import DATABASE_URL, ROLES, EMAIL_RE, log
+from .config import DATABASE_URL, ROLES, READ_ONLY, EMAIL_RE, log
 from .utils import name_from, safe_url
 from .db import pool, SCHEMA, tx, run
 from .security import DEFAULT_ADMIN_PW, hash_pw, check_pw
@@ -16,6 +16,7 @@ def start_db():
         c.execute(SCHEMA)
         admins = ensure_admins(c)
         ensure_users(c)
+        ensure_readonly_admins(c)
     log.info("Connected to PostgreSQL at %s", safe_url(DATABASE_URL))
     return admins
 
@@ -54,6 +55,44 @@ def ensure_users(c):
             c.execute("update users set pw_hash=%s, updated_at=now() where id=%s", (hash_pw(pw), x["id"]))
             audit(c, None, "USER_ACTIVATED", email, "Password set from USER_ACCOUNTS")
             log.info("Activated invited account %s from USER_ACCOUNTS", email)
+def configured_readonly_admins():
+    # Read-only admins from .env: every <NAME>_READONLY_EMAIL with its <NAME>_READONLY_USERNAME and <NAME>_READONLY_PASSWORD
+    # (e.g. SARAVAN_READONLY_*). READONLY_ADMIN_ROLE must say ADMIN_READ_ONLY.  ->  [(name, email, password)]
+    role = os.environ.get("READONLY_ADMIN_ROLE", "ADMIN_READ_ONLY").strip()
+    if role.lower() != READ_ONLY:
+        log.error("Ignoring read-only admins: READONLY_ADMIN_ROLE is %r, expected ADMIN_READ_ONLY", role); return []
+    out = []
+    for key in sorted(k for k in os.environ if k.endswith("_READONLY_EMAIL")):
+        p = key[:-len("_READONLY_EMAIL")]
+        email = os.environ[key].strip().lower(); name = os.environ.get(p + "_READONLY_USERNAME", "").strip() or name_from(email)
+        pw = os.environ.get(p + "_READONLY_PASSWORD", "")
+        if not email: continue
+        if not EMAIL_RE.match(email): log.error("Ignoring %s: invalid email", key)
+        elif email not in (e for _, e, _ in out): out.append((name, email, pw))
+    return out
+def ensure_readonly_admins(c):
+    # Runs on every start. Missing accounts are created with the configured password (stored hashed); existing accounts
+    # only get the read-only admin role. Passwords of existing accounts are never changed. ADMIN_EMAILS wins.
+    admins = configured_admin_emails()
+    for name, email, pw in configured_readonly_admins():
+        if email in admins:
+            log.error("%s is in ADMIN_EMAILS and in the read-only admin settings; keeping it a full admin", email); continue
+        x = c.execute("select id, role, pw_hash, deleted_at from users where email=%s for update", (email,)).fetchone()
+        if not x:
+            if len(pw) < 8: log.error("Not creating read-only admin %s: its _READONLY_PASSWORD must be at least 8 characters", email); continue
+            c.execute("insert into users(name,email,pw_hash,role) values(%s,%s,%s,%s)", (name, email, hash_pw(pw), READ_ONLY))
+            audit(c, None, "USER_CREATED", email, f"{name} created as read-only admin from .env")
+            log.info("Created read-only admin account %s (%s)", email, name); continue
+        if x["deleted_at"]: log.warning("Read-only admin %s was deleted in the app; not recreating it", email); continue
+        if x["role"] != READ_ONLY:
+            n = c.execute("select count(*) c from tickets where assignee_id=%s and status<>'CLOSED'", (x["id"],)).fetchone()["c"]
+            if n: log.error("Not making %s a read-only admin: it still owns %d open ticket(s). Reassign them first.", email, n); continue
+            c.execute("update users set role=%s, updated_at=now() where id=%s", (READ_ONLY, x["id"]))
+            audit(c, None, "ROLE_CHANGED", email, f"{x['role']} -> {READ_ONLY} (read-only admin in .env)")
+            log.info("Made %s a read-only admin (was %s)", email, x["role"])
+        if not x["pw_hash"] and len(pw) >= 8:  # an invited account without a password is activated with the configured one
+            c.execute("update users set pw_hash=%s, updated_at=now() where id=%s", (hash_pw(pw), x["id"]))
+            audit(c, None, "USER_ACTIVATED", email, "Password set from the read-only admin settings")
 def ensure_admins(c):
     # Runs on every start (and with --ensure-admins). Every configured email ends up as an admin:
     # existing accounts are promoted, missing ones are created. Existing passwords are never changed,
@@ -73,7 +112,7 @@ def ensure_admins(c):
             log.info("Promoted %s from %s to admin (listed in ADMIN_EMAILS)", e, x["role"])
     admins = c.execute("select email, pw_hash from users where role='admin' order by id").fetchall()
     if not admins:
-        log.error("There is no admin account. Set ADMIN_EMAILS in .env and restart, or run: python mlops_service_desk.py --ensure-admins")
+        log.error("There is no admin account. Set ADMIN_EMAILS in .env and restart, or run: python -m app --ensure-admins")
     for a in admins:
         if a["pw_hash"] and check_pw(DEFAULT_ADMIN_PW, a["pw_hash"]):
             log.warning("Admin %s still uses the default password %s. Change it now: sign in, open the profile menu (top right) > Settings > Change Password.", a["email"], DEFAULT_ADMIN_PW)

@@ -90,6 +90,9 @@ td{padding:13px 12px;border-bottom:1px solid #f1f5f9;text-align:left;vertical-al
 .note.warn{background:#fffbeb;border-color:#fde68a;color:#92400e}
 .mbox.sm{max-width:440px;text-align:center}.mbox.sm .ico{width:56px;height:56px;border-radius:50%;background:#fef2f2;color:#dc2626;display:inline-flex;align-items:center;justify-content:center;margin-bottom:6px}.mbox.sm p{color:var(--mu);line-height:1.55}
 .mbox.sm .ico.info{background:#eff6ff;color:#2563eb}
+.req{color:#dc2626;font-weight:700}  /* red asterisk on mandatory fields (only the asterisk is red) */
+.ro{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:700;color:#92400e;background:#fef3c7;border:1px solid #fde68a;border-radius:99px;padding:3px 10px;white-space:nowrap}
+.b.admin_read_only{background:#fef3c7;color:#92400e}
 /* ---------- tracker ---------- */
 .track{display:flex;margin:26px 0 12px}
 .step{flex:1;text-align:center;font-size:12px;color:#94a3b8;position:relative;padding:0 4px}
@@ -179,6 +182,7 @@ html[data-theme="dark"] .b.ASSIGNED{background:#78350f80;color:#fcd34d}
 html[data-theme="dark"] .b.INPROGRESS,html[data-theme="dark"] .b.engineer{background:#0c4a6e80;color:#7dd3fc}
 html[data-theme="dark"] .b.ONHOLD,html[data-theme="dark"] .b.user{background:#33415580;color:#cbd5e1}
 html[data-theme="dark"] .b.admin{background:#4c1d9580;color:#c4b5fd}
+html[data-theme="dark"] .req{color:#f87171}html[data-theme="dark"] .ro,html[data-theme="dark"] .b.admin_read_only{background:#78350f80;color:#fcd34d;border-color:#78350f}
 html[data-theme="dark"] .tabs{background:#0e1424}html[data-theme="dark"] .tabs a{color:var(--mu)}html[data-theme="dark"] .tabs a.on{background:var(--card);color:#a5b4fc}
 html[data-theme="dark"] .seg3 button.on{color:#a5b4fc}
 html[data-theme="dark"] .sbar,html[data-theme="dark"] .meter{background:#263049}

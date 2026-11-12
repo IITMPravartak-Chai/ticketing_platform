@@ -3,19 +3,20 @@ import base64
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Depends
 from ..db import q, tx
-from ..security import admin
+from ..security import admin_view
 from ..services.tickets import audit
 from ..services.xlsx import XLSX_COLS, xlsx
 
 router = APIRouter()
 
-DEP_SEL = """select d.*, t.rid, t.title, x.name deployed_by_name, x.email deployed_by_email
-  from deployment_records d join tickets t on t.id=d.ticket_id join users x on x.id=d.deployed_by"""
+DEP_SEL = """select d.*, t.rid, t.title, x.name deployed_by_name, x.email deployed_by_email, res.server_type
+  from deployment_records d join tickets t on t.id=d.ticket_id join users x on x.id=d.deployed_by
+  left join ticket_resolutions res on res.ticket_id=d.ticket_id"""
 @router.get("/api/deployments")
-def deployments(u=Depends(admin)):
+def deployments(u=Depends(admin_view)):
     return [{k: v for k, v in r.items() if k != "idempotency_key"} for r in q(DEP_SEL + " order by d.submitted_at desc, d.id desc")]
 @router.get("/api/deployments/export")
-def deployments_export(q_: str = "", type: str = "ALL", env: str = "ALL", u=Depends(admin)):
+def deployments_export(q_: str = "", type: str = "ALL", env: str = "ALL", u=Depends(admin_view)):
     qq = q_.strip().lower()[:200]
     rows = [r for r in q(DEP_SEL + " order by d.submitted_at desc, d.id desc")
             if (type == "ALL" or r["deployment_type"] == type) and (env == "ALL" or r["environment"] == env)
@@ -26,7 +27,7 @@ def deployments_export(q_: str = "", type: str = "ALL", env: str = "ALL", u=Depe
     return {"name": name, "count": len(rows), "src": "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,"
             + base64.b64encode(xlsx("Deployment Details", XLSX_COLS, rows)).decode()}
 @router.get("/api/deployments/{did}")
-def deployment(did: int, u=Depends(admin)):
+def deployment(did: int, u=Depends(admin_view)):
     d = q(DEP_SEL + " where d.id=%s", (did,), True)
     if not d: raise HTTPException(404, "Deployment record not found")
     d.pop("idempotency_key", None)

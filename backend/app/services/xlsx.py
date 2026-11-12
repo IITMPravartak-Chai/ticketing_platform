@@ -6,7 +6,7 @@ from xml.sax.saxutils import escape
 # package); every cell is an inline string, so nothing in a record can run as an Excel formula.
 XLSX_COLS = [("Ticket ID", "rid", 14), ("Ticket Title", "title", 30), ("Application", "app_name", 24), ("Application URL", "app_url", 36),
              ("Server Name", "server_name", 20), ("Server IP / Host", "server_ip", 18), ("Deployment Type", "deployment_type", 16),
-             ("Environment", "environment", 14), ("Status", "status", 22), ("Version", "version", 12), ("Deployed At", "deployed_at", 22),
+             ("Server Type", "server_type", 14), ("Environment", "environment", 14), ("Status", "status", 22), ("Version", "version", 12), ("Deployed At", "deployed_at", 22),
              ("Deployed By", "deployed_by_name", 22), ("Deployed By Email", "deployed_by_email", 30), ("Role", "deployed_by_role", 16),
              ("Pipeline Name", "pipeline_name", 20), ("Pipeline Run ID", "pipeline_run_id", 18), ("Commit ID", "commit_id", 14),
              ("Deployment Method", "method", 18), ("CI/CD Tool", "cicd_tool", 16), ("Repository", "repo_url", 36),

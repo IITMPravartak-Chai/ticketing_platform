@@ -24,7 +24,11 @@ HOST = os.environ.get("HOST", "127.0.0.1")  # 0.0.0.0 makes the app reachable fr
 PORT = int(os.environ.get("PORT") or 8000)
 # Built React app (frontend/dist, made by "npm run build"). Docker sets this to where the image keeps it.
 FRONTEND_DIST = os.environ.get("FRONTEND_DIST") or os.path.join(ROOT_DIR, "frontend", "dist")
-ROLES = ["user", "engineer", "admin"]
+ROLES = ["user", "engineer", "admin", "admin_read_only"]
+# Read-only admins see everything an admin sees but cannot change anything (enforced in security.user for every API call)
+READ_ONLY = "admin_read_only"
+ADMIN_VIEW = ("admin", READ_ONLY)  # roles that may read admin pages and every ticket
+SERVER_TYPES = ["On-Premises", "Cloud, AWS"]  # chosen when a ticket is closed
 STAT = ["NEW", "ASSIGNED", "IN PROGRESS", "ON HOLD", "CLOSED"]
 ACTIVE = ["ASSIGNED", "IN PROGRESS", "ON HOLD"]
 TYPES = ["Deployment Request", "Access Request", "Other"]

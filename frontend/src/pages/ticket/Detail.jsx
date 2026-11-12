@@ -1,6 +1,6 @@
 // Ticket page: details, tracker, conversation and audit history.
 import {useState,useEffect,useCallback} from 'react';
-import {TRACK,ACTIVE,DESC,ROLE_NAME,ACTION,ACCESS_TYPES} from '../../lib/constants';
+import {TRACK,ACTIVE,DESC,ROLE_NAME,ACTION,ACCESS_TYPES,READ_ONLY} from '../../lib/constants';
 import {api} from '../../lib/api';
 import {owner,ownership,dur} from '../../lib/format';
 import {Ic} from '../../components/Icon';
@@ -53,11 +53,13 @@ export function Detail({id,me,flash,refresh,go}){
       <p><b>Current Status:</b> <Badge v={r.status}/> &nbsp; <b>Owner:</b> {owner(r)}</p>{r.status==='CLOSED'&&(r.access?<p><b>Result:</b> {r.deploy_status}</p>:<p><b>Deployment URL:</b> <Url u={r.deploy_url}/></p>)}</div>}
     {tab==='conv'&&<div><div className="chat">{r.comments.map((m,i)=><div key={i} className={'msg '+(m.author_id===me.id?'me':'')}><small><b>{m.name}</b> ({ROLE_NAME[m.role]}) · {m.created_at}</small>{m.body}</div>)}
       {!r.comments.length&&<div className="empty">No messages yet.</div>}</div>
-      {r.status!=='CLOSED'&&<form className="chatbox" onSubmit={send}><textarea rows="2" required value={body} onChange={e=>setBody(e.target.value)} placeholder="Write a reply..."/><button className="btn"><Ic n="send" s={16}/> Send</button></form>}</div>}
+      {r.status!=='CLOSED'&&me.role===READ_ONLY&&<p className="ssub">Read-only access: you can read the conversation but not reply.</p>}
+      {r.status!=='CLOSED'&&me.role!==READ_ONLY&&<form className="chatbox" onSubmit={send}><textarea rows="2" required value={body} onChange={e=>setBody(e.target.value)} placeholder="Write a reply..."/><button className="btn"><Ic n="send" s={16}/> Send</button></form>}</div>}
     {tab==='history'&&<div><h3>Ticket Record</h3><table className="kv"><tbody>
       <Row k="Created By">{`${r.rname} <${r.remail}>`}</Row><Row k="Created At">{r.created_at}</Row>
       <Row k="Owner">{owner(r)}</Row><Row k="Ownership">{ownership(r)}</Row><Row k="Assigned / Taken At">{r.assigned_at||'-'}</Row>
       <Row k={r.access?'Result':'Deployment Status'}>{r.deploy_status||'-'}</Row><Row k={r.access?'Completed At':'Deployed At'}>{r.deployed_at||'-'}</Row><Row k="URL"><Url u={r.deploy_url}/></Row>
+      <Row k="Server Type">{r.server_type||'-'}</Row>
       <Row k="Closed By">{r.closed_by_name?`${r.closed_by_name} <${r.closed_by_email}>`:'-'}</Row><Row k="Closed At">{r.closed_at||'-'}</Row></tbody></table>
       <h3 style={{marginTop:24}}>Audit Trail</h3><div className="tw"><table><thead><tr><th>When</th><th>Action</th><th>Status</th><th>By</th><th>Details</th></tr></thead><tbody>
       {r.history.map(h=><tr key={h.id}><td style={{whiteSpace:'nowrap'}}>{h.created_at}</td><td>{ACTION[h.action]||h.action}</td>

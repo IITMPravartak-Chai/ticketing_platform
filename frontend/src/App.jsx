@@ -1,5 +1,6 @@
 // Root component: sign-in state, page routing and ticket links from emails (/#/t/MLOPS-0001).
 import {useState,useEffect,useRef} from 'react';
+import {adminView} from './lib/constants';
 import {api} from './lib/api';
 import {chime} from './lib/sound';
 import {Register,Verify,SetPassword,Login} from './pages/Auth';
@@ -42,7 +43,7 @@ export function App(){
   useEffect(()=>{if(!msg)return;const t=setTimeout(()=>setMsg(''),5000);return()=>clearTimeout(t)},[msg]);
   const logout=()=>{localStorage.removeItem('tok');sessionStorage.removeItem('tok');seen.current=null;setMe(null);go('login')};
   if(!ready)return <div style={{padding:40}}>Loading…</div>;
-  const n=page.n,isA=me&&me.role==='admin';
+  const n=page.n,isA=me&&adminView(me.role);
   let body;
   if(!me){
     if(n==='register')body=<Register go={go} setReg={setReg} flash={flash}/>;
@@ -53,10 +54,10 @@ export function App(){
   }else{
     let c;
     const dash=isA?<AdminDash me={me} go={go}/>:me.role==='engineer'?<EngineerDash me={me} go={go}/>:<UserDash me={me} go={go}/>;
-    if(n==='raise'&&!isA)c=<Raise go={go} flash={flash}/>;
+    if(n==='raise'&&!isA)c=<Raise go={go} flash={flash} me={me}/>;
     else if(n==='submitted')c=<Submitted rid={page.a} go={go}/>;
     else if(n==='my'&&!isA)c=<TicketList key={'my'+page.a} src="/requests" initial={page.a} go={go}/>;
-    else if(n==='assigned'&&me.role!=='user')c=<TicketList key={'assigned'+page.a} src="/assigned" initial={page.a} go={go} requester/>;
+    else if(n==='assigned'&&(me.role==='engineer'||me.role==='admin'))c=<TicketList key={'assigned'+page.a} src="/assigned" initial={page.a} go={go} requester/>;
     else if(n==='queue'&&isA)c=<TicketList key={'queue'+page.a} src="/queue" initial={page.a} go={go} requester/>;
     else if(n==='users'&&isA)c=<Users me={me} flash={flash}/>;
     else if(n==='notifs')c=<Notifications go={go} refresh={loadMe}/>;

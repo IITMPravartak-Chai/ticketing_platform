@@ -331,6 +331,8 @@ The backend reads `.env` from the project root (the folder that holds `backend/`
 | `SMTP_USER` / `SMTP_PASS` | | | Mailbox login. Microsoft 365 and Gmail need an **app password** |
 | `SMTP_FROM` | | `SMTP_USER` | Sender address shown on emails |
 | `TEAM_EMAILS` | | | Comma-separated emails shown in the admin's **Assign** dropdown |
+| `READONLY_ADMIN_ROLE` | | `ADMIN_READ_ONLY` | Role given to the read-only admins below; must be `ADMIN_READ_ONLY` |
+| `<NAME>_READONLY_USERNAME` / `_EMAIL` / `_PASSWORD` | | | One read-only admin per prefix, e.g. `SARAVAN_READONLY_*`. See [Read-only admin accounts](#read-only-admin-accounts) |
 | `USER_ACCOUNTS` | | | `Name\|email\|password` entries, comma-separated, created as Users on every start if missing (see [User accounts](#user-accounts-from-env)) |
 | `FRONTEND_DIST` | | `frontend/dist` | Folder with the built frontend. Docker sets it; rarely needed otherwise |
 | `BACKEND_URL` | | `http://127.0.0.1:<PORT>` | Development only: where `npm run dev` forwards `/api` calls |
@@ -388,6 +390,27 @@ USER_ACCOUNTS=Asha|asha@example.com|<starting password>,Ravi|ravi@example.com|<s
 - **Bad entries:** an entry with a bad email, a short password or the wrong format is skipped, with an `Ignoring USER_ACCOUNTS entry` line in the log.
 - **Admins:** an address that is also in `ADMIN_EMAILS` is made an admin instead.
 - Ask everyone to change their starting password after the first login: profile menu → Settings → Change Password.
+
+### Read-only admin accounts
+
+Read-only admins are set in `.env`, one group of three keys per person with a shared prefix:
+
+```ini
+READONLY_ADMIN_ROLE=ADMIN_READ_ONLY
+SARAVAN_READONLY_USERNAME=Saravanan
+SARAVAN_READONLY_EMAIL=saravanan.murugan@iitmpravartak.net
+SARAVAN_READONLY_PASSWORD=<starting password, at least 8 characters>
+HAREESH_READONLY_USERNAME=Hareesh
+HAREESH_READONLY_EMAIL=hareesh@iitmpravartak.net
+HAREESH_READONLY_PASSWORD=<starting password>
+```
+
+- **On every start:** a missing account is created with that password, stored hashed (salted PBKDF2-SHA256, like every other account). The password is never stored or returned in plain text.
+- **Existing accounts:** an account that already exists only gets the read-only admin role; its password is never changed. Restarts never create duplicates.
+- **Conflicts:** an address in `ADMIN_EMAILS` stays a full admin. Someone who still owns open tickets isn't switched until they're reassigned. An account deleted in the app isn't recreated.
+- **Keeping it fixed:** admins can't change these accounts' role or delete them in the app, because the next restart would undo it. Remove them from `.env` first.
+- **Add another person:** add another `<NAME>_READONLY_*` group, then restart.
+- **First sign-in:** ask them to change the starting password (profile menu → Settings → Change Password).
 
 ### Repair admin roles
 
@@ -655,16 +678,17 @@ The app logs to `docker compose logs -f app` with Docker, or to the console (`jo
 
 ### Roles
 
-| Action | User | MLOps Engineer | Admin |
-|---|:-:|:-:|:-:|
-| Raise tickets, see and comment on their own tickets | ✅ | ✅ | |
-| See tickets assigned to them | | ✅ | ✅ |
-| See every ticket | | | ✅ |
-| Assign or reassign tickets, take ownership | | | ✅ |
-| Start, hold, resume and close a ticket | owner only | owner only | owner only |
-| Change user roles, delete users | | | ✅ |
+| Action | User | MLOps Engineer | Admin | Read-Only Admin |
+|---|:-:|:-:|:-:|:-:|
+| Raise tickets, see and comment on their own tickets | ✅ | ✅ | | |
+| See tickets assigned to them | | ✅ | ✅ | |
+| See every ticket, the Admin Dashboard, users and deployment details | | | ✅ | ✅ (view only) |
+| Assign or reassign tickets, take ownership | | | ✅ | |
+| Start, hold, resume and close a ticket | owner only | owner only | owner only | |
+| Change user roles, delete users | | | ✅ | |
 
 - New sign-ups are **Users**.
+- **Read-Only Admins** (`admin_read_only`) see everything a normal admin sees: dashboard, All Tickets, every ticket with its history, attachments, closure and deployment record, Users & Roles, and Deployment Details with the Excel download. They cannot change anything: no comments, assignments, status changes, closures, role changes or deletions. The server enforces this on every API call (any write gets `403`), not just by hiding buttons. The only changes they can make are their own password and marking their own notifications read. They never see VPN passwords or API keys, and tickets can't be assigned to them. The header shows a **Read Only** badge. See [Read-only admin accounts](#read-only-admin-accounts).
 - Assigning a ticket to someone makes them an **MLOps Engineer**. If they have no account yet, an invited account is created and they activate it with *Create account*.
 - Admins can't change their own role, and someone who owns open tickets can't be demoted to User.
 - **Deleting a user** (Users & Roles → Delete): someone with no tickets or history is removed completely. Someone with history can no longer sign in, disappears from the user list, gets no more emails, and stays on old tickets as "Name (deleted)"; their email can register again. Admins listed in `ADMIN_EMAILS` and people who own open tickets can't be deleted.
@@ -678,6 +702,8 @@ The app logs to `docker compose logs -f app` with Docker, or to the console (`jo
 | Other | Up to 5 screenshots |
 
 Tickets have no priority.
+
+**Drafts:** what someone types on the Raise Request form is saved automatically as a draft in their browser, separately for each signed-in person. Leaving the page, reloading or closing the tab doesn't lose it, and the form shows *Draft restored from …* with a **Clear draft** button. The draft is deleted when the ticket is submitted. Screenshots aren't kept in drafts, and a draft doesn't follow the person to another computer or browser.
 
 **Deployment hours:** the MLOps team works on Deployment Requests from **8:00 AM to 5:30 PM India time (IST, Asia/Kolkata)**, but they can be raised and submitted at **any time**. Every ticket is saved first, with status Pending; its submission time never closes, rejects or changes it. After saving, the Raise Request form shows an information popup depending on when the server received a Deployment Request: **6:00 to 7:59 AM** shows *Request Received – Processing Update* (working hours begin at 8:00 AM); **after 5:30 PM** shows *Submission Successful – Processing Update* (processed today if the team is available, otherwise tomorrow); 8:00 AM to 5:30 PM, and midnight to 5:59 AM, show no popup. The server's clock decides. These tickets are marked in their audit history ("submitted before 8:00 AM, before deployment hours" or "submitted after 5:30 PM, outside deployment hours"), and the new-ticket email to admins says so. Access Requests and Other requests never show a popup. The hours are `DEPLOY_OPEN`, `DEPLOY_CLOSE` and `EARLY_OPEN` in `backend/app/config.py`.
 
@@ -696,6 +722,8 @@ The status stored for a new ticket is `NEW`; the app shows it as **Pending**.
 - **Deployment result:** either **Successfully Deployed** (needs only the date/time and deployment URL; version, environment and notes are optional; closes the ticket) or **Failed / Bug Fix Required**. Failure opens a pop-up to describe the errors and attach up to 5 screenshots. The ticket waits as **BUG FIX REQUIRED**, the requester is emailed, and the requester (or the owner, or an admin) fixes it and uses **Resubmit for Redeployment** with what was fixed and, optionally, a new branch or PR. It goes back to the owner, and every attempt stays on the ticket. An admin can also mark someone else's deployment as failed.
 - **Deployment details (Deployment Requests):** choosing **Successfully Deployed** opens the deployment details form, which must be filled in to close the ticket. **CI/CD** also asks for the pipeline name, run ID and commit. Both ask for the application, server name and IP, environment (Development, Testing or Production), date/time, version and notes; *Deployed By* is the signed-in person. The record and the closure are saved in one transaction, and a retried submit never creates a second record. Records are confidential: only admins can see them, on the **Deployment Details** page (search, type and environment filters, full record per row, and a **Download Excel** button in the top-right corner that saves the records shown as an .xlsx file; each download is written to the audit log) and from a closed ticket. Engineers fill in the form but can't list or read records, even through the API. Requesters only get the status, date, application URL, version and environment.
 - **Closing an access request:** the result (Access Granted, Partially Granted or Rejected) plus, by type: Git, a short summary of the access given; Model Endpoint, the endpoint URL; VPN, the VPN username and password (never emailed, shown in the ticket behind Show/Copy) and optional PDFs such as the VPN config.
+- **Server Type:** closing any ticket (deployment, access or other) needs a **Server Type**: On-Premises or Cloud, AWS. The dropdown starts empty (*Select Server Type*), and the ticket can't close until one is chosen; the server rejects a missing or different value too. It's shown in the closure details, the Audit History tab, the deployment record, the Deployment Details list and the Excel download. Tickets closed before this field existed show `-`.
+- **Mandatory fields:** every required field has a red asterisk (*) after its label, on every form.
 - **Tracker tab:** hover over (or tap) the line between two steps to see how long that step took. On-hold time is shown separately.
 - **Audit History tab:** every action is listed, with who did it and when.
 

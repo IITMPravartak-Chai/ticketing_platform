@@ -2,7 +2,10 @@
 
 export const STAT=["NEW","ASSIGNED","IN PROGRESS","ON HOLD","CLOSED"],TRACK=["NEW","ASSIGNED","IN PROGRESS","CLOSED"],ACTIVE=["ASSIGNED","IN PROGRESS","ON HOLD"];
 export const DESC={"NEW":"Waiting for assignment","ASSIGNED":"Owner assigned","IN PROGRESS":"Work in progress","ON HOLD":"Paused by the owner","CLOSED":"Resolved and closed"};
-export const ROLES=["user","engineer","admin"],ROLE_NAME={user:'User',engineer:'MLOps Engineer',admin:'Admin'};
+export const ROLES=["user","engineer","admin","admin_read_only"],ROLE_NAME={user:'User',engineer:'MLOps Engineer',admin:'Admin',admin_read_only:'Read-Only Admin'};
+// Read-only admins see every admin page and ticket but cannot change anything (the server refuses every write)
+export const READ_ONLY='admin_read_only',adminView=role=>role==='admin'||role===READ_ONLY;
+export const SERVER_TYPES=['On-Premises','Cloud, AWS'];  // chosen when a ticket is closed
 export const ACTION={CREATED:'Created',ASSIGNED:'Assigned',REASSIGNED:'Reassigned',OWNERSHIP_TAKEN:'Ownership taken',STATUS_CHANGED:'Status changed',COMMENTED:'Comment',CLOSED:'Closed',
   DEPLOY_FAILED:'Failed / bug fix required',RESUBMITTED:'Resubmitted for redeployment'};
 export const TYPES=["Deployment Request","Access Request","Other"],ENVS=["Development","Staging","Production"];

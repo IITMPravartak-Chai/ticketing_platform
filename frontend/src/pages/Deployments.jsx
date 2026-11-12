@@ -27,7 +27,7 @@ export function Deployments({go}){
     <div className="tw"><table><thead><tr><th>Ticket ID</th><th>Application</th><th>Server</th><th>Type</th><th>Environment</th><th>Status</th><th>Deployed At</th><th>Deployed By</th><th>Application URL</th></tr></thead><tbody>
     {shown.map(x=><tr key={x.id} className="click" onClick={()=>setSel(x.id)} title="Open the full record">
       <td style={{whiteSpace:'nowrap'}}><a className="l" onClick={e=>{e.stopPropagation();go('detail',x.rid)}}>{x.rid}</a></td><td>{x.app_name}</td>
-      <td>{x.server_name}<div className="ssub"><code>{x.server_ip}</code></div></td><td>{depBadge(x.deployment_type)}</td><td>{x.environment}</td>
+      <td>{x.server_name}<div className="ssub"><code>{x.server_ip}</code>{x.server_type?` · ${x.server_type}`:''}</div></td><td>{depBadge(x.deployment_type)}</td><td>{x.environment}</td>
       <td><Badge v="CLOSED" t={x.status}/></td><td style={{whiteSpace:'nowrap'}}>{x.deployed_at}</td><td>{x.deployed_by_name}<div className="ssub">{ROLE_NAME[x.deployed_by_role]||x.deployed_by_role}</div></td>
       <td onClick={e=>e.stopPropagation()}><Url u={x.app_url}/></td></tr>)}
     {!shown.length&&<tr><td colSpan="9" className="empty">{rows.length?'No deployments match these filters.':'No deployments recorded yet. They appear here when a Deployment Request is closed.'}</td></tr>}</tbody></table></div>

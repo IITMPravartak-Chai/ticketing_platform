@@ -7,11 +7,15 @@ export const Badge=({v,t})=><span className={'b '+v.replace(' ','')}>{t||(v==='N
 // Status badge for a ticket: a failed deployment waiting for its fix shows BUG FIX REQUIRED instead of ON HOLD
 export const StatusBadge=({r})=>r.fix_open?<Badge v="BUG FIX" t="BUG FIX REQUIRED"/>:<Badge v={r.status}/>;  // t: display text when it differs from the value (role names)
 export const Tabs=({items,v,set})=><div className="tabs">{items.map(([k,l])=><a key={k} className={v===k?'on':''} onClick={()=>set(k)}>{l}</a>)}</div>;
-export const F=({l,...p})=><label>{l}<input {...p}/></label>;
+// Red asterisk for a mandatory field. Lbl puts it right after the label text; F and PwField add it by themselves
+// whenever the input is required, so the asterisk always matches what the form (and the server) enforces.
+export const Req=()=><span className="req" aria-hidden="true">*</span>;
+export const Lbl=({t,req})=><>{t}{req&&<>{' '}<Req/></>}</>;
+export const F=({l,...p})=><label><Lbl t={l} req={p.required}/><input {...p}/></label>;
 // Password box with an eye button that shows or hides what was typed
 export function PwField({l,...p}){
   const [show,setShow]=useState(false);
-  return <label>{l}<div className="pw"><input {...p} type={show?'text':'password'}/>
+  return <label><Lbl t={l} req={p.required}/><div className="pw"><input {...p} type={show?'text':'password'}/>
     <button type="button" className="eye" onClick={()=>setShow(!show)} title={show?'Hide password':'Show password'} aria-label={show?'Hide password':'Show password'}><Ic n={show?'eyeOff':'eye'} s={18}/></button></div></label>;
 }
 export const Row=({k,children})=><tr><td>{k}</td><td>{children}</td></tr>;
