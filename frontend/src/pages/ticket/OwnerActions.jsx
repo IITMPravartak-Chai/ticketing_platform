@@ -92,7 +92,7 @@ export function OwnerPanel({r,act,flash,me}){
   const [mode,setMode]=useState(null),[reason,setReason]=useState('');
   const hold=async e=>{e.preventDefault();if(await act('/hold',{reason},'Ticket put ON HOLD')){setMode(null);setReason('')}};
   if(r.fix_open)return <div className="section"><h3>Work on this Ticket</h3><div className="note warn" style={{marginTop:0}}>This deployment is waiting for a bug fix.
-    Once {r.rname} (or you) fixes it and uses <b>Resubmit for Redeployment</b>, it comes back to you to redeploy.</div></div>;
+    Once {r.rname} fixes it and uses <b>Resubmit for Redeployment</b>, it comes back to you to redeploy.</div></div>;
   return <div className="section"><h3>Work on this Ticket</h3><p className="sub" style={{marginBottom:14}}>You own this ticket. Only you can update its status and close it.</p>
     <div className="actions">
       {r.status==='ASSIGNED'&&<button className="btn" onClick={()=>act('/start',undefined,'Ticket moved to IN PROGRESS')}><Ic n="clock" s={16}/> Start Work</button>}
