@@ -291,10 +291,11 @@ def fail(rid: str, b: FailIn, u=Depends(user)):
     return {"ok": True}
 @router.post("/api/requests/{rid}/resubmit")
 def resubmit(rid: str, b: ResubmitIn, u=Depends(user)):
-    # After the fix, the requester (or the owner or an admin) sends the deployment back to the owner to redeploy
+    # After the fix, the requester sends the deployment back to the owner to redeploy.
+    # Only if the requester's account was deleted may the owner or an admin resubmit (so the ticket is never stuck).
     t = get_ticket(rid, u); notes, branch, pr = b.fix_notes.strip(), b.branch.strip(), b.pr_url.strip()
-    if not (u["role"] == "admin" or u["id"] in (t["requester_id"], t["assignee_id"])):
-        raise HTTPException(403, "Only the requester, the owner or an admin can resubmit this deployment")
+    if u["id"] != t["requester_id"] and not (t["requester_gone"] and (u["role"] == "admin" or u["id"] == t["assignee_id"])):
+        raise HTTPException(403, f"Only the requester ({t['rname']}) can fix the bugs and resubmit this deployment")
     if not notes: raise HTTPException(400, "Describe what was fixed")
     if branch and not BRANCH_RE.match(branch): raise HTTPException(400, "Branch name can only use letters, numbers and _ . / - (no spaces)")
     if pr and not URL_RE.match(pr): raise HTTPException(400, "Pull Request URL must start with http:// or https://")

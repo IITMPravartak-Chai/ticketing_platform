@@ -8,7 +8,8 @@ from ..db import q
 SEL = """select t.*, r.name rname, r.email remail, a.name aname, a.email aemail, ab.name assigned_by_name,
     res.deploy_status, res.deployed_at, res.notes deploy_notes, res.issues, res.resolution, res.deploy_url, res.version,
     res.environment res_env, res.server_type, res.closed_at, cb.name closed_by_name, cb.email closed_by_email,
-    exists(select 1 from deploy_bugs db where db.ticket_id=t.id and db.fixed_at is null) fix_open
+    exists(select 1 from deploy_bugs db where db.ticket_id=t.id and db.fixed_at is null) fix_open,
+    r.deleted_at is not null requester_gone
   from tickets t join users r on r.id=t.requester_id left join users a on a.id=t.assignee_id
   left join users ab on ab.id=t.assigned_by left join ticket_resolutions res on res.ticket_id=t.id
   left join users cb on cb.id=res.closed_by"""

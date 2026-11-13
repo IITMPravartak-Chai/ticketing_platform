@@ -39,7 +39,7 @@ export function Detail({id,me,flash,refresh,go}){
       {r.status==='CLOSED'&&<Closure r={r}/>}
       {r.deployment&&<DepPointer r={r} go={go}/>}
       {r.bugs.length>0&&<BugReports r={r}/>}
-      {r.fix_open&&(isA||r.is_owner||me.id===r.requester_id)&&<Resubmit key={r.bugs.length} r={r} act={act}/>}
+      {r.fix_open&&(me.id===r.requester_id||(r.requester_gone&&(me.role==='admin'||r.is_owner)))&&<Resubmit key={r.bugs.length} r={r} act={act}/>}
       {r.is_owner&&active&&<OwnerPanel r={r} act={act} flash={flash} me={me}/>}
       {!r.is_owner&&active&&<div className="note"><b>{r.aname}</b> owns this ticket and is responsible for resolving and closing it.{isA?' Use Take Ownership below to work on it yourself.':''}</div>}
       {isA&&r.status!=='CLOSED'&&<div className="section"><AdminPanel key={r.assignee_id||0} r={r} act={act}/>
